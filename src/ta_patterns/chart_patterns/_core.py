@@ -136,9 +136,16 @@ def pit_pivot_lows(l: np.ndarray, n: int = 5) -> np.ndarray:
 
 def pivots_in_window(pivot_idx: np.ndarray, pivot_val: np.ndarray,
                      start: int, end: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Return (indices, values) of pivots whose index is in [start, end]."""
-    mask = (pivot_idx >= start) & (pivot_idx <= end)
-    return pivot_idx[mask], pivot_val[mask]
+    """Return (indices, values) of pivots whose index is in [start, end].
+
+    ``pivot_idx`` comes from ``np.where`` (and clustering preserves order), so
+    it is sorted ascending and the in-window pivots form a contiguous slice
+    located with ``np.searchsorted`` in O(log P) — versus the old boolean mask
+    that was O(P) on every call and, inside per-bar loops, O(N·P) overall.
+    """
+    a = np.searchsorted(pivot_idx, start, side="left")
+    b = np.searchsorted(pivot_idx, end, side="right")
+    return pivot_idx[a:b], pivot_val[a:b]
 
 
 def last_n_pivots(pivot_idx, pivot_val, n_pivots):

@@ -639,26 +639,38 @@ def batch_all(
         candle_names = list(candle_patterns)
 
     # ── chart side ───────────────────────────────────────────────────────
-    chart_mat = _cp.chart_batch(o, h, l, c, v=v, patterns=chart_patterns,
-                                 mode=mode, window=window,
-                                 pivot_n=pivot_n, pivot_pct=pivot_pct,
-                                 as_frame=False)
+    # Scan once, then derive both the column names and the matrix from the
+    # same result.  (Previously this ran the full chart scan twice — once via
+    # chart_batch to build the matrix and again via chart_scan_all purely to
+    # recover the column names — doubling the cost of batch_all.)
+    raw_cp = _cp.chart_scan_all(o, h, l, c, v=v, mode=mode,
+                                 window=window, pivot_n=pivot_n,
+                                 pivot_pct=pivot_pct)
     _cckw = {"all": _cp.CHART_PATTERNS, "directional": _cp.DIRECTIONAL,
              "bullish": _cp.BULLISH, "bearish": _cp.BEARISH,
              "bidirectional": _cp.BIDIRECTIONAL,
              "non_directional": _cp.NON_DIRECTIONAL}
     if isinstance(chart_patterns, str):
-        # Match what chart_batch actually returned (same filter)
-        raw_cp = _cp.chart_scan_all(o, h, l, c, v=v, mode=mode,
-                                     window=window, pivot_n=pivot_n,
-                                     pivot_pct=pivot_pct)
-        if chart_patterns in _cckw:
-            chart_names = sorted(k for k in raw_cp
-                                  if k in _cckw[chart_patterns])
-        else:
-            chart_names = sorted(raw_cp)
+        if chart_patterns not in _cckw:
+            raise ValueError(
+                f"chart_patterns={chart_patterns!r} not recognised. "
+                f"Use one of {sorted(_cckw)} or a list of names."
+            )
+        chart_names = sorted(k for k in raw_cp if k in _cckw[chart_patterns])
     else:
+        unknown = [n for n in chart_patterns if n not in raw_cp]
+        if unknown:
+            raise ValueError(
+                f"Unknown chart pattern(s): {unknown}. "
+                f"Call chart_list_patterns() for available names."
+            )
         chart_names = list(chart_patterns)
+
+    if chart_names:
+        chart_mat = np.column_stack(
+            [raw_cp[n].astype(np.int8) for n in chart_names])
+    else:
+        chart_mat = np.empty((N, 0), dtype=np.int8)
 
     # Prefix collisions with 'cp_'
     candle_set = set(candle_names)

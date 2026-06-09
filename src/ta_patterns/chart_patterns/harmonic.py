@@ -42,6 +42,22 @@ def _ratio(a, b):
     return abs(b) / (abs(a) + _EPS)
 
 
+def _last_before(t_arr, t_ref, window):
+    """Index of the most recent pivot strictly before ``t_ref`` and within
+    ``window`` bars of it, else -1.
+
+    Equivalent to ``max([(t, p) ... if t < t_ref and t_ref - t < window],
+    key=time)`` — but because ``t_arr`` is sorted ascending the answer is just
+    the pivot immediately preceding ``t_ref`` (when it falls inside the window),
+    found with ``searchsorted`` in O(log P) instead of an O(P) scan per pivot.
+    """
+    b = int(np.searchsorted(t_arr, t_ref, "left"))
+    if b == 0:
+        return -1
+    k = b - 1
+    return k if (t_ref - t_arr[k]) < window else -1
+
+
 # ---------------------------------------------------------------------------
 # AB=CD
 # ---------------------------------------------------------------------------
@@ -68,23 +84,20 @@ def abcd_bull(o, h, l, c,
         if tD < window:
             continue
         # C: most recent high before D
-        C_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                   if t_ph[j] < tD and tD - t_ph[j] < window]
-        if not C_cands:
+        kC = _last_before(t_ph, tD, window)
+        if kC < 0:
             continue
-        tC, pC = max(C_cands, key=lambda x: x[0])
+        tC, pC = t_ph[kC], p_ph[kC]
         # B: most recent low before C
-        B_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                   if t_pl[j] < tC and tC - t_pl[j] < window]
-        if not B_cands:
+        kB = _last_before(t_pl, tC, window)
+        if kB < 0:
             continue
-        tB, pB = max(B_cands, key=lambda x: x[0])
+        tB, pB = t_pl[kB], p_pl[kB]
         # A: most recent high before B
-        A_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                   if t_ph[j] < tB and tB - t_ph[j] < window]
-        if not A_cands:
+        kA = _last_before(t_ph, tB, window)
+        if kA < 0:
             continue
-        tA, pA = max(A_cands, key=lambda x: x[0])
+        tA, pA = t_ph[kA], p_ph[kA]
 
         AB = pA - pB
         CD = pC - pD
@@ -123,21 +136,18 @@ def abcd_bear(o, h, l, c,
         tD, pD = t_ph[iD], p_ph[iD]
         if tD < window:
             continue
-        C_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                   if t_pl[j] < tD and tD - t_pl[j] < window]
-        if not C_cands:
+        kC = _last_before(t_pl, tD, window)
+        if kC < 0:
             continue
-        tC, pC = max(C_cands, key=lambda x: x[0])
-        B_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                   if t_ph[j] < tC and tC - t_ph[j] < window]
-        if not B_cands:
+        tC, pC = t_pl[kC], p_pl[kC]
+        kB = _last_before(t_ph, tC, window)
+        if kB < 0:
             continue
-        tB, pB = max(B_cands, key=lambda x: x[0])
-        A_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                   if t_pl[j] < tB and tB - t_pl[j] < window]
-        if not A_cands:
+        tB, pB = t_ph[kB], p_ph[kB]
+        kA = _last_before(t_pl, tB, window)
+        if kA < 0:
             continue
-        tA, pA = max(A_cands, key=lambda x: x[0])
+        tA, pA = t_pl[kA], p_pl[kA]
 
         AB = pB - pA
         CD = pD - pC
@@ -174,26 +184,22 @@ def _xabcd_bull(h, l, c, t_ph, p_ph, t_pl, p_pl, window, N, mode,
         tD, pD = t_pl[iD], p_pl[iD]
         if tD < window:
             continue
-        C_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                   if t_ph[j] < tD and tD - t_ph[j] < window]
-        if not C_cands:
+        kC = _last_before(t_ph, tD, window)
+        if kC < 0:
             continue
-        tC, pC = max(C_cands, key=lambda x: x[0])
-        B_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                   if t_pl[j] < tC and tC - t_pl[j] < window]
-        if not B_cands:
+        tC, pC = t_ph[kC], p_ph[kC]
+        kB = _last_before(t_pl, tC, window)
+        if kB < 0:
             continue
-        tB, pB = max(B_cands, key=lambda x: x[0])
-        A_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                   if t_ph[j] < tB and tB - t_ph[j] < window]
-        if not A_cands:
+        tB, pB = t_pl[kB], p_pl[kB]
+        kA = _last_before(t_ph, tB, window)
+        if kA < 0:
             continue
-        tA, pA = max(A_cands, key=lambda x: x[0])
-        X_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                   if t_pl[j] < tA and tA - t_pl[j] < window]
-        if not X_cands:
+        tA, pA = t_ph[kA], p_ph[kA]
+        kX = _last_before(t_pl, tA, window)
+        if kX < 0:
             continue
-        tX, pX = max(X_cands, key=lambda x: x[0])
+        tX, pX = t_pl[kX], p_pl[kX]
 
         XA = pA - pX
         AB = pA - pB
@@ -235,26 +241,22 @@ def _xabcd_bear(h, l, c, t_ph, p_ph, t_pl, p_pl, window, N, mode,
         tD, pD = t_ph[iD], p_ph[iD]
         if tD < window:
             continue
-        C_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                   if t_pl[j] < tD and tD - t_pl[j] < window]
-        if not C_cands:
+        kC = _last_before(t_pl, tD, window)
+        if kC < 0:
             continue
-        tC, pC = max(C_cands, key=lambda x: x[0])
-        B_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                   if t_ph[j] < tC and tC - t_ph[j] < window]
-        if not B_cands:
+        tC, pC = t_pl[kC], p_pl[kC]
+        kB = _last_before(t_ph, tC, window)
+        if kB < 0:
             continue
-        tB, pB = max(B_cands, key=lambda x: x[0])
-        A_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                   if t_pl[j] < tB and tB - t_pl[j] < window]
-        if not A_cands:
+        tB, pB = t_ph[kB], p_ph[kB]
+        kA = _last_before(t_pl, tB, window)
+        if kA < 0:
             continue
-        tA, pA = max(A_cands, key=lambda x: x[0])
-        X_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                   if t_ph[j] < tA and tA - t_ph[j] < window]
-        if not X_cands:
+        tA, pA = t_pl[kA], p_pl[kA]
+        kX = _last_before(t_ph, tA, window)
+        if kX < 0:
             continue
-        tX, pX = max(X_cands, key=lambda x: x[0])
+        tX, pX = t_ph[kX], p_ph[kX]
 
         XA = pX - pA
         AB = pB - pA
@@ -456,26 +458,22 @@ def wolfe_wave_bull(o, h, l, c,
         if t5 < window:
             continue
         # Find points in time order: 1(L), 2(H), 3(L), 4(H), 5(L)
-        p4_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                    if t_ph[j] < t5 and t5 - t_ph[j] < window]
-        if not p4_cands:
+        k4 = _last_before(t_ph, t5, window)
+        if k4 < 0:
             continue
-        t4, p4 = max(p4_cands, key=lambda x: x[0])
-        p3_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                    if t_pl[j] < t4 and t4 - t_pl[j] < window]
-        if not p3_cands:
+        t4, p4 = t_ph[k4], p_ph[k4]
+        k3 = _last_before(t_pl, t4, window)
+        if k3 < 0:
             continue
-        t3, p3 = max(p3_cands, key=lambda x: x[0])
-        p2_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                    if t_ph[j] < t3 and t3 - t_ph[j] < window]
-        if not p2_cands:
+        t3, p3 = t_pl[k3], p_pl[k3]
+        k2 = _last_before(t_ph, t3, window)
+        if k2 < 0:
             continue
-        t2, p2 = max(p2_cands, key=lambda x: x[0])
-        p1_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                    if t_pl[j] < t2 and t2 - t_pl[j] < window]
-        if not p1_cands:
+        t2, p2 = t_ph[k2], p_ph[k2]
+        k1 = _last_before(t_pl, t2, window)
+        if k1 < 0:
             continue
-        t1, p1 = max(p1_cands, key=lambda x: x[0])
+        t1, p1 = t_pl[k1], p_pl[k1]
 
         # Point 3 must be above point 1
         if p3 <= p1:
@@ -519,26 +517,22 @@ def wolfe_wave_bear(o, h, l, c,
         t5, p5 = t_ph[i5], p_ph[i5]
         if t5 < window:
             continue
-        p4_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                    if t_pl[j] < t5 and t5 - t_pl[j] < window]
-        if not p4_cands:
+        k4 = _last_before(t_pl, t5, window)
+        if k4 < 0:
             continue
-        t4, p4 = max(p4_cands, key=lambda x: x[0])
-        p3_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                    if t_ph[j] < t4 and t4 - t_ph[j] < window]
-        if not p3_cands:
+        t4, p4 = t_pl[k4], p_pl[k4]
+        k3 = _last_before(t_ph, t4, window)
+        if k3 < 0:
             continue
-        t3, p3 = max(p3_cands, key=lambda x: x[0])
-        p2_cands = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                    if t_pl[j] < t3 and t3 - t_pl[j] < window]
-        if not p2_cands:
+        t3, p3 = t_ph[k3], p_ph[k3]
+        k2 = _last_before(t_pl, t3, window)
+        if k2 < 0:
             continue
-        t2, p2 = max(p2_cands, key=lambda x: x[0])
-        p1_cands = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                    if t_ph[j] < t2 and t2 - t_ph[j] < window]
-        if not p1_cands:
+        t2, p2 = t_pl[k2], p_pl[k2]
+        k1 = _last_before(t_ph, t2, window)
+        if k1 < 0:
             continue
-        t1, p1 = max(p1_cands, key=lambda x: x[0])
+        t1, p1 = t_ph[k1], p_ph[k1]
 
         if p3 >= p1:
             continue

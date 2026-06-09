@@ -113,12 +113,14 @@ def _detect_double_top(o, h, l, c, mode, window, pivot_n, pivot_pct,
     hp = _at_pivot(h, pivot_n)          # price at the true swing bar
     lp = _at_pivot(l, pivot_n)
     ph_idx = _cluster_pivots(ph_idx, hp[ph_idx], pivot_n, 'high')
+    ph_val = hp[ph_idx]              # loop-invariant: hoisted out of per-bar scan
     pl_idx = _cluster_pivots(pl_idx, lp[pl_idx], pivot_n, 'low')
+    pl_val = lp[pl_idx]              # loop-invariant: hoisted out of per-bar scan
     result  = np.zeros(N, dtype=np.int8)
 
     for i in range(window, N):
-        ph_w, ph_v = pivots_in_window(ph_idx, hp[ph_idx], i - window, i - 1)
-        pl_w, pl_v = pivots_in_window(pl_idx, lp[pl_idx], i - window, i - 1)
+        ph_w, ph_v = pivots_in_window(ph_idx, ph_val, i - window, i - 1)
+        pl_w, pl_v = pivots_in_window(pl_idx, pl_val, i - window, i - 1)
 
         if len(ph_w) < 2 or len(pl_w) < 1:
             continue
@@ -171,12 +173,14 @@ def _detect_double_bottom(o, h, l, c, mode, window, pivot_n, pivot_pct,
     hp = _at_pivot(h, pivot_n)
     lp = _at_pivot(l, pivot_n)
     ph_idx = _cluster_pivots(ph_idx, hp[ph_idx], pivot_n, 'high')
+    ph_val = hp[ph_idx]              # loop-invariant: hoisted out of per-bar scan
     pl_idx = _cluster_pivots(pl_idx, lp[pl_idx], pivot_n, 'low')
+    pl_val = lp[pl_idx]              # loop-invariant: hoisted out of per-bar scan
     result  = np.zeros(N, dtype=np.int8)
 
     for i in range(window, N):
-        pl_w, pl_v = pivots_in_window(pl_idx, lp[pl_idx], i - window, i - 1)
-        ph_w, ph_v = pivots_in_window(ph_idx, hp[ph_idx], i - window, i - 1)
+        pl_w, pl_v = pivots_in_window(pl_idx, pl_val, i - window, i - 1)
+        ph_w, ph_v = pivots_in_window(ph_idx, ph_val, i - window, i - 1)
 
         if len(pl_w) < 2 or len(ph_w) < 1:
             continue
@@ -357,13 +361,15 @@ def ugly_double_bottom(o, h, l, c, mode: str = 'confirmed',
     hp = _at_pivot(h, pivot_n)
     lp = _at_pivot(l, pivot_n)
     ph_idx = _cluster_pivots(ph_idx, hp[ph_idx], pivot_n, 'high')
+    ph_val = hp[ph_idx]              # loop-invariant: hoisted out of per-bar scan
     pl_idx = _cluster_pivots(pl_idx, lp[pl_idx], pivot_n, 'low')
+    pl_val = lp[pl_idx]              # loop-invariant: hoisted out of per-bar scan
 
     result  = np.zeros(N, dtype=np.int8)
 
     for i in range(window, N):
-        pl_w, _ = pivots_in_window(pl_idx, lp[pl_idx], i - window, i - 1)
-        ph_w, _ = pivots_in_window(ph_idx, hp[ph_idx], i - window, i - 1)
+        pl_w, _ = pivots_in_window(pl_idx, pl_val, i - window, i - 1)
+        ph_w, _ = pivots_in_window(ph_idx, ph_val, i - window, i - 1)
         if len(pl_w) < 2 or len(ph_w) < 1:
             continue
         p1_idx, p2_idx = pl_w[-2], pl_w[-1]
@@ -411,13 +417,15 @@ def triple_top(o, h, l, c, mode: str = 'confirmed',
     hp = _at_pivot(h, pivot_n)
     lp = _at_pivot(l, pivot_n)
     ph_idx = _cluster_pivots(ph_idx, hp[ph_idx], pivot_n, 'high')
+    ph_val = hp[ph_idx]              # loop-invariant: hoisted out of per-bar scan
     pl_idx = _cluster_pivots(pl_idx, lp[pl_idx], pivot_n, 'low')
+    pl_val = lp[pl_idx]              # loop-invariant: hoisted out of per-bar scan
 
     result  = np.zeros(N, dtype=np.int8)
 
     for i in range(window, N):
-        ph_w, _ = pivots_in_window(ph_idx, hp[ph_idx], i - window, i - 1)
-        pl_w, _ = pivots_in_window(pl_idx, lp[pl_idx], i - window, i - 1)
+        ph_w, _ = pivots_in_window(ph_idx, ph_val, i - window, i - 1)
+        pl_w, _ = pivots_in_window(pl_idx, pl_val, i - window, i - 1)
         if len(ph_w) < 3 or len(pl_w) < 2:
             continue
 
@@ -463,13 +471,15 @@ def triple_bottom(o, h, l, c, mode: str = 'confirmed',
     hp = _at_pivot(h, pivot_n)
     lp = _at_pivot(l, pivot_n)
     ph_idx = _cluster_pivots(ph_idx, hp[ph_idx], pivot_n, 'high')
+    ph_val = hp[ph_idx]              # loop-invariant: hoisted out of per-bar scan
     pl_idx = _cluster_pivots(pl_idx, lp[pl_idx], pivot_n, 'low')
+    pl_val = lp[pl_idx]              # loop-invariant: hoisted out of per-bar scan
 
     result  = np.zeros(N, dtype=np.int8)
 
     for i in range(window, N):
-        pl_w, _ = pivots_in_window(pl_idx, lp[pl_idx], i - window, i - 1)
-        ph_w, _ = pivots_in_window(ph_idx, hp[ph_idx], i - window, i - 1)
+        pl_w, _ = pivots_in_window(pl_idx, pl_val, i - window, i - 1)
+        ph_w, _ = pivots_in_window(ph_idx, ph_val, i - window, i - 1)
         if len(pl_w) < 3 or len(ph_w) < 2:
             continue
 
@@ -542,11 +552,12 @@ def three_peaks(o, h, l, c, mode: str = 'confirmed', window: int = 120,
     ph_idx  = np.where(ph_mask)[0]
     hp = _at_pivot(h, pivot_n)
     ph_idx = _cluster_pivots(ph_idx, hp[ph_idx], pivot_n, 'high')
+    ph_val = hp[ph_idx]              # loop-invariant: hoisted out of per-bar scan
 
     result  = np.zeros(N, dtype=np.int8)
 
     for i in range(window, N):
-        ph_w, _ = pivots_in_window(ph_idx, hp[ph_idx], i - window, i - 1)
+        ph_w, _ = pivots_in_window(ph_idx, ph_val, i - window, i - 1)
         if len(ph_w) < 3:
             continue
         p1, p2, p3 = ph_w[-3], ph_w[-2], ph_w[-1]
@@ -576,11 +587,12 @@ def three_valleys(o, h, l, c, mode: str = 'confirmed', window: int = 120,
     pl_idx  = np.where(pl_mask)[0]
     lp = _at_pivot(l, pivot_n)
     pl_idx = _cluster_pivots(pl_idx, lp[pl_idx], pivot_n, 'low')
+    pl_val = lp[pl_idx]              # loop-invariant: hoisted out of per-bar scan
 
     result  = np.zeros(N, dtype=np.int8)
 
     for i in range(window, N):
-        pl_w, _ = pivots_in_window(pl_idx, lp[pl_idx], i - window, i - 1)
+        pl_w, _ = pivots_in_window(pl_idx, pl_val, i - window, i - 1)
         if len(pl_w) < 3:
             continue
         p1, p2, p3 = pl_w[-3], pl_w[-2], pl_w[-1]
@@ -618,11 +630,12 @@ def three_peaks_domed_house(o, h, l, c, mode: str = 'confirmed',
     ph_idx  = np.where(ph_mask)[0]
     hp = _at_pivot(h, pivot_n)
     ph_idx = _cluster_pivots(ph_idx, hp[ph_idx], pivot_n, 'high')
+    ph_val = hp[ph_idx]              # loop-invariant: hoisted out of per-bar scan
 
     result  = np.zeros(N, dtype=np.int8)
 
     for i in range(window, N):
-        ph_w, _ = pivots_in_window(ph_idx, hp[ph_idx], i - window, i - window // 2)
+        ph_w, _ = pivots_in_window(ph_idx, ph_val, i - window, i - window // 2)
         if len(ph_w) < 3:
             continue
         # Three peaks in the older half of the window

@@ -213,22 +213,102 @@ def _triangle_lines(t_ph, p_ph, t_pl, p_pl, i_end, window, min_pivots=2):
     """
     Fit upper trendline through recent pivot highs and lower through lows.
     Returns (s_hi, i_hi, s_lo, i_lo, ok) where ok = enough pivots found.
+
+    Pivot confirmation times (``t_ph``/``t_pl``) come from ``np.where`` and are
+    therefore sorted ascending, so the bars inside the window ``[i_end-window,
+    i_end]`` form a contiguous slice located with ``np.searchsorted`` in
+    O(log P) — instead of re-scanning every pivot on every bar, which made the
+    enclosing per-bar loops O(N²).  The selected pivot set (and its order) is
+    identical to the old list-comprehension, so results are unchanged.
     """
-    ph_w = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-            if i_end - window <= t_ph[j] <= i_end]
-    pl_w = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-            if i_end - window <= t_pl[j] <= i_end]
-    if len(ph_w) < min_pivots or len(pl_w) < min_pivots:
+    lo_t = i_end - window
+    a_h = np.searchsorted(t_ph, lo_t, "left")
+    b_h = np.searchsorted(t_ph, i_end, "right")
+    a_l = np.searchsorted(t_pl, lo_t, "left")
+    b_l = np.searchsorted(t_pl, i_end, "right")
+    if (b_h - a_h) < min_pivots or (b_l - a_l) < min_pivots:
         return 0, 0, 0, 0, False
-    x_h = np.array([p[0] for p in ph_w], float)
-    y_h = np.array([p[1] for p in ph_w], float)
-    x_l = np.array([p[0] for p in pl_w], float)
-    y_l = np.array([p[1] for p in pl_w], float)
+    x_h = t_ph[a_h:b_h].astype(float)
+    y_h = p_ph[a_h:b_h].astype(float)
+    x_l = t_pl[a_l:b_l].astype(float)
+    y_l = p_pl[a_l:b_l].astype(float)
     s_hi, i_hi, r2_hi = fit_line(x_h, y_h)
     s_lo, i_lo, r2_lo = fit_line(x_l, y_l)
     if r2_hi < 0.5 or r2_lo < 0.5:
         return 0, 0, 0, 0, False
     return s_hi, i_hi, s_lo, i_lo, True
+
+
+def _sliding_fit(t, p, window, N):
+    """
+    Vectorised sliding-window linear regression of ``p`` (pivot prices) on
+    ``t`` (pivot times), evaluated for *every* bar ``i`` in ``[0, N)`` over the
+    window ``[i-window, i]``.
+
+    Returns ``(slope, intercept, r2, n)`` — each a length-N array — reproducing
+    :func:`fit_line_r2`'s result per bar via prefix sums, so the whole family of
+    triangle/wedge/channel detectors can share one O(N) pass instead of calling
+    :func:`_triangle_lines` (and ``fit_line_r2``) once per bar, per detector.
+    """
+    t = np.asarray(t, dtype=float)
+    p = np.asarray(p, dtype=float)
+    M = len(t)
+    bars = np.arange(N)
+    if M == 0:
+        z = np.zeros(N)
+        return z, z.copy(), z.copy(), np.zeros(N, dtype=np.int64)
+    # prefix sums, padded with a leading 0 so prefix[k] = sum of first k items
+    z0   = np.zeros(1)
+    csx  = np.concatenate((z0, np.cumsum(t)))
+    csy  = np.concatenate((z0, np.cumsum(p)))
+    csxx = np.concatenate((z0, np.cumsum(t * t)))
+    csyy = np.concatenate((z0, np.cumsum(p * p)))
+    csxy = np.concatenate((z0, np.cumsum(t * p)))
+    # window [i-window, i] is a contiguous slice [a:b] of the sorted pivot times
+    a = np.searchsorted(t, bars - window, side="left")
+    b = np.searchsorted(t, bars, side="right")
+    n   = (b - a).astype(float)
+    Sx  = csx[b]  - csx[a]
+    Sy  = csy[b]  - csy[a]
+    Sxx = csxx[b] - csxx[a]
+    Syy = csyy[b] - csyy[a]
+    Sxy = csxy[b] - csxy[a]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        n_safe = np.where(n > 0, n, 1.0)
+        mx = Sx / n_safe
+        my = Sy / n_safe
+        ss_xx  = Sxx - Sx * Sx / n_safe          # Σ(x-mx)^2
+        ss_xy  = Sxy - Sx * Sy / n_safe          # Σ(x-mx)(y-my)
+        ss_tot = Syy - Sy * Sy / n_safe          # Σ(y-my)^2
+        good = ss_xx > _EPS
+        slope = np.where(good, ss_xy / np.where(good, ss_xx, 1.0), 0.0)
+        intercept = my - slope * mx
+        ss_res = ss_tot - slope * ss_xy
+        r2 = np.where((ss_tot > _EPS) & good, 1.0 - ss_res / ss_tot, 0.0)
+        # fit_line_r2: ss_xx < _EPS → r2 = 0; ss_tot < _EPS (but ss_xx ok) → r2 = 1
+        r2 = np.where(good & ~(ss_tot > _EPS), 1.0, r2)
+    # n < 2 mirrors fit_line_r2's early return: slope 0, intercept mean(y), r2 0
+    one_pt = (b - a) < 2
+    slope     = np.where(one_pt, 0.0, slope)
+    intercept = np.where(one_pt, np.where(n > 0, my, 0.0), intercept)
+    r2        = np.where(one_pt, 0.0, r2)
+    return slope, intercept, r2, (b - a)
+
+
+def _sliding_trendlines(t_ph, p_ph, t_pl, p_pl, N, window, min_pivots=2):
+    """
+    Per-bar upper/lower trendline fits for every bar in ``[0, N)`` — the
+    vectorised, shared-across-detectors equivalent of calling
+    :func:`_triangle_lines` in a ``for i in range(window, N)`` loop.
+
+    Returns ``(S_HI, I_HI, S_LO, I_LO, OK)`` arrays of length N where ``OK[i]``
+    matches the old ``ok`` flag (enough pivots in window *and* both r² ≥ 0.5).
+    """
+    s_hi, i_hi, r2_hi, n_hi = _sliding_fit(t_ph, p_ph, window, N)
+    s_lo, i_lo, r2_lo, n_lo = _sliding_fit(t_pl, p_pl, window, N)
+    ok = ((n_hi >= min_pivots) & (n_lo >= min_pivots)
+          & (r2_hi >= 0.5) & (r2_lo >= 0.5))
+    return s_hi, i_hi, s_lo, i_lo, ok
 
 
 def ascending_triangle(o, h, l, c,
@@ -249,11 +329,12 @@ def ascending_triangle(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if abs(s_hi) > flat_tol:            # upper line not flat
             continue
         if s_lo <= 0:                        # lower line not rising
@@ -286,11 +367,12 @@ def descending_triangle(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if abs(s_lo) > flat_tol:
             continue
         if s_hi >= 0:
@@ -321,11 +403,12 @@ def symmetrical_triangle(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi >= 0 or s_lo <= 0:          # need descending hi, ascending lo
             continue
         if not lines_converging(s_hi, s_lo, i_hi, i_lo, i - window):
@@ -363,11 +446,12 @@ def broadening_top(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi <= 0 or s_lo >= 0:          # upper rising, lower falling
             continue
         sup = line_val(s_lo, i_lo, i)
@@ -395,11 +479,12 @@ def broadening_bottom(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi <= 0 or s_lo >= 0:
             continue
         res = line_val(s_hi, i_hi, i)
@@ -426,11 +511,12 @@ def broadening_wedge_asc(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi <= 0 or s_lo <= 0:          # both must rise
             continue
         if s_lo <= s_hi:                    # lower must rise faster (diverging)
@@ -459,11 +545,12 @@ def broadening_wedge_desc(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi >= 0 or s_lo >= 0:
             continue
         if s_hi >= s_lo:                    # upper must fall faster
@@ -494,11 +581,12 @@ def right_angle_broadening_asc(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if abs(s_hi) > flat_tol or s_lo >= 0:
             continue
         sup = line_val(s_lo, i_lo, i)
@@ -526,11 +614,12 @@ def right_angle_broadening_desc(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi <= 0 or abs(s_lo) > flat_tol:
             continue
         res = line_val(s_hi, i_hi, i)
@@ -562,11 +651,12 @@ def rising_wedge(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi <= 0 or s_lo <= 0:
             continue
         if not lines_converging(s_hi, s_lo, i_hi, i_lo, i - window):
@@ -595,11 +685,12 @@ def falling_wedge(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi >= 0 or s_lo >= 0:
             continue
         if not lines_converging(s_hi, s_lo, i_hi, i_lo, i - window):
@@ -635,11 +726,12 @@ def rectangle_top(o, h, l, c,
     dt = downtrend(c, 20)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if abs(s_hi) > flat_tol or abs(s_lo) > flat_tol:
             continue
         sup = line_val(s_lo, i_lo, i)
@@ -668,11 +760,12 @@ def rectangle_bottom(o, h, l, c,
     ut = uptrend(c, 20)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if abs(s_hi) > flat_tol or abs(s_lo) > flat_tol:
             continue
         res = line_val(s_hi, i_hi, i)
@@ -705,11 +798,12 @@ def channel_asc(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi <= 0 or s_lo <= 0:
             continue
         if abs(s_hi - s_lo) / (abs(s_lo) + _EPS) > parallel_tol:
@@ -740,11 +834,12 @@ def channel_desc(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi >= 0 or s_lo >= 0:
             continue
         if abs(s_hi - s_lo) / (abs(s_lo) + _EPS) > parallel_tol:
@@ -793,16 +888,17 @@ def flag_bull(o, h, l, c,
     ph = _ph(h, pivot_n, pivot_pct)
     pl = _pl(l, pivot_n, pivot_pct)
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     result = np.zeros(N, dtype=np.int8)
 
     for i in range(pole_bars + window, N):
         pole_start, direction = _flagpole(c, i - window, min_pole, pole_bars)
         if direction != 1:
             continue
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window, min_pivots=2)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi >= 0 or s_lo >= 0:          # flag should drift down (both neg)
             continue
         # Retrace should be limited
@@ -835,16 +931,17 @@ def flag_bear(o, h, l, c,
     ph = _ph(h, pivot_n, pivot_pct)
     pl = _pl(l, pivot_n, pivot_pct)
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     result = np.zeros(N, dtype=np.int8)
 
     for i in range(pole_bars + window, N):
         pole_start, direction = _flagpole(c, i - window, min_pole, pole_bars)
         if direction != -1:
             continue
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window, min_pivots=2)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi <= 0 or s_lo <= 0:
             continue
         flag_rise = c[i] - c[i - window]
@@ -912,16 +1009,17 @@ def pennant_bull(o, h, l, c,
     ph = _ph(h, pivot_n, pivot_pct)
     pl = _pl(l, pivot_n, pivot_pct)
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     result = np.zeros(N, dtype=np.int8)
 
     for i in range(pole_bars + window, N):
         pole_start, direction = _flagpole(c, i - window, min_pole, pole_bars)
         if direction != 1:
             continue
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window, min_pivots=2)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi >= 0 or s_lo <= 0:          # converging: hi descending, lo ascending
             continue
         res = line_val(s_hi, i_hi, i)
@@ -947,16 +1045,17 @@ def pennant_bear(o, h, l, c,
     ph = _ph(h, pivot_n, pivot_pct)
     pl = _pl(l, pivot_n, pivot_pct)
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     result = np.zeros(N, dtype=np.int8)
 
     for i in range(pole_bars + window, N):
         pole_start, direction = _flagpole(c, i - window, min_pole, pole_bars)
         if direction != -1:
             continue
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window, min_pivots=2)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         if s_hi >= 0 or s_lo <= 0:
             continue
         sup = line_val(s_lo, i_lo, i)
@@ -993,19 +1092,21 @@ def cup_with_handle(o, h, l, c,
         cup_start = i - cup_window - handle_window
         handle_start = i - handle_window
 
-        # Left rim: highest point in cup region
-        cup_ph = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                  if cup_start <= t_ph[j] < handle_start]
-        if not cup_ph:
+        # Left rim: highest point in cup region.  t_ph is sorted, so the cup
+        # span [cup_start, handle_start) is a contiguous slice (searchsorted),
+        # avoiding an O(P) re-scan of every pivot on every bar.
+        a_h = np.searchsorted(t_ph, cup_start, "left")
+        b_h = np.searchsorted(t_ph, handle_start, "left")
+        if b_h <= a_h:
             continue
-        left_rim_price = max(p for _, p in cup_ph)
+        left_rim_price = p_ph[a_h:b_h].max()
 
         # Cup bottom: lowest point in cup
-        cup_pl = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                  if cup_start <= t_pl[j] < handle_start]
-        if not cup_pl:
+        a_l = np.searchsorted(t_pl, cup_start, "left")
+        b_l = np.searchsorted(t_pl, handle_start, "left")
+        if b_l <= a_l:
             continue
-        cup_bottom = min(p for _, p in cup_pl)
+        cup_bottom = p_pl[a_l:b_l].min()
         cup_depth  = left_rim_price - cup_bottom
         if cup_depth / (left_rim_price + _EPS) < 0.05:
             continue                         # cup too shallow
@@ -1049,17 +1150,17 @@ def inverted_cup_with_handle(o, h, l, c,
         cup_start    = i - cup_window - handle_window
         handle_start = i - handle_window
 
-        cup_pl = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                  if cup_start <= t_pl[j] < handle_start]
-        if not cup_pl:
+        a_l = np.searchsorted(t_pl, cup_start, "left")
+        b_l = np.searchsorted(t_pl, handle_start, "left")
+        if b_l <= a_l:
             continue
-        left_rim_price = min(p for _, p in cup_pl)
+        left_rim_price = p_pl[a_l:b_l].min()
 
-        cup_ph = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                  if cup_start <= t_ph[j] < handle_start]
-        if not cup_ph:
+        a_h = np.searchsorted(t_ph, cup_start, "left")
+        b_h = np.searchsorted(t_ph, handle_start, "left")
+        if b_h <= a_h:
             continue
-        cup_top   = max(p for _, p in cup_ph)
+        cup_top   = p_ph[a_h:b_h].max()
         cup_depth = cup_top - left_rim_price
         if cup_depth / (cup_top + _EPS) < 0.05:
             continue
@@ -1244,23 +1345,24 @@ def bump_and_run_top(o, h, l, c,
     total = lead_window + bump_window
 
     for i in range(total, N):
-        # Lead-in trendline (older portion)
-        lead_pl = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                   if i - total <= t_pl[j] < i - bump_window]
-        if len(lead_pl) < 2:
+        # Lead-in trendline (older portion).  t_pl sorted → contiguous slices
+        # via searchsorted instead of an O(P) re-scan per bar.
+        a_le = np.searchsorted(t_pl, i - total, "left")
+        b_le = np.searchsorted(t_pl, i - bump_window, "left")
+        if (b_le - a_le) < 2:
             continue
-        x_l = np.array([p[0] for p in lead_pl], float)
-        y_l = np.array([p[1] for p in lead_pl], float)
+        x_l = t_pl[a_le:b_le].astype(float)
+        y_l = p_pl[a_le:b_le].astype(float)
         s_lead, i_lead, r2 = fit_line(x_l, y_l)
         if r2 < 0.6 or s_lead <= 0:        # lead-in must rise
             continue
         # Bump: slope in bump window must be steeper
-        bump_pl = [(t_pl[j], p_pl[j]) for j in range(len(t_pl))
-                   if i - bump_window <= t_pl[j] <= i]
-        if len(bump_pl) < 2:
+        a_bu = np.searchsorted(t_pl, i - bump_window, "left")
+        b_bu = np.searchsorted(t_pl, i, "right")
+        if (b_bu - a_bu) < 2:
             continue
-        xb = np.array([p[0] for p in bump_pl], float)
-        yb = np.array([p[1] for p in bump_pl], float)
+        xb = t_pl[a_bu:b_bu].astype(float)
+        yb = p_pl[a_bu:b_bu].astype(float)
         s_bump, _, _ = fit_line(xb, yb)
         if s_bump < bump_factor * s_lead:   # bump not steep enough
             continue
@@ -1292,21 +1394,21 @@ def bump_and_run_bottom(o, h, l, c,
     total = lead_window + bump_window
 
     for i in range(total, N):
-        lead_ph = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                   if i - total <= t_ph[j] < i - bump_window]
-        if len(lead_ph) < 2:
+        a_le = np.searchsorted(t_ph, i - total, "left")
+        b_le = np.searchsorted(t_ph, i - bump_window, "left")
+        if (b_le - a_le) < 2:
             continue
-        x_h = np.array([p[0] for p in lead_ph], float)
-        y_h = np.array([p[1] for p in lead_ph], float)
+        x_h = t_ph[a_le:b_le].astype(float)
+        y_h = p_ph[a_le:b_le].astype(float)
         s_lead, i_lead, r2 = fit_line(x_h, y_h)
         if r2 < 0.6 or s_lead >= 0:
             continue
-        bump_ph = [(t_ph[j], p_ph[j]) for j in range(len(t_ph))
-                   if i - bump_window <= t_ph[j] <= i]
-        if len(bump_ph) < 2:
+        a_bu = np.searchsorted(t_ph, i - bump_window, "left")
+        b_bu = np.searchsorted(t_ph, i, "right")
+        if (b_bu - a_bu) < 2:
             continue
-        xb = np.array([p[0] for p in bump_ph], float)
-        yb = np.array([p[1] for p in bump_ph], float)
+        xb = t_ph[a_bu:b_bu].astype(float)
+        yb = p_ph[a_bu:b_bu].astype(float)
         s_bump, _, _ = fit_line(xb, yb)
         if s_bump > bump_factor * s_lead:
             continue
@@ -1524,35 +1626,36 @@ def measured_move_up(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
-    for j in range(2, len(t_ph)):
-        tA, pA = t_pl[-1] if t_pl.size else (0, 0), 0
-        # Find three-point structure: low1, high1, low2, high2
-        for jh in range(1, len(t_ph)):
-            tH1, pH1 = t_ph[jh - 1], p_ph[jh - 1]
-            tH2, pH2 = t_ph[jh],     p_ph[jh]
-            # Low between them
-            lows_between = [(t_pl[k], p_pl[k]) for k in range(len(t_pl))
-                            if tH1 < t_pl[k] < tH2]
-            if not lows_between:
-                continue
-            tL2, pL2 = min(lows_between, key=lambda x: x[1])
-            # Low before H1
-            lows_before = [(t_pl[k], p_pl[k]) for k in range(len(t_pl))
-                           if t_pl[k] < tH1]
-            if not lows_before:
-                continue
-            tL1, pL1 = max(lows_before, key=lambda x: x[0])
-            leg1 = pH1 - pL1
-            leg2 = pH2 - pL2
-            if leg1 <= 0 or leg2 <= 0:
-                continue
-            if abs(leg2 - leg1) / (leg1 + _EPS) < leg_tol:
-                t_signal = min(tH2, N - 1)
-                if result[t_signal] == 0:
-                    if mode == 'forming':
-                        result[t_signal] = 1
-                    elif c[t_signal] > pH1:
-                        result[t_signal] = 1
+    # (Previously wrapped in a redundant ``for j in range(2, len(t_ph))`` loop
+    # whose index was never used — it re-ran this identical scan P times, with
+    # every pass after the first a no-op thanks to the ``result[...] == 0``
+    # guard.  Removing it is output-identical and drops an O(P) factor.)
+    for jh in range(1, len(t_ph)):
+        tH1, pH1 = t_ph[jh - 1], p_ph[jh - 1]
+        tH2, pH2 = t_ph[jh],     p_ph[jh]
+        # Low between them
+        lows_between = [(t_pl[k], p_pl[k]) for k in range(len(t_pl))
+                        if tH1 < t_pl[k] < tH2]
+        if not lows_between:
+            continue
+        tL2, pL2 = min(lows_between, key=lambda x: x[1])
+        # Low before H1
+        lows_before = [(t_pl[k], p_pl[k]) for k in range(len(t_pl))
+                       if t_pl[k] < tH1]
+        if not lows_before:
+            continue
+        tL1, pL1 = max(lows_before, key=lambda x: x[0])
+        leg1 = pH1 - pL1
+        leg2 = pH2 - pL2
+        if leg1 <= 0 or leg2 <= 0:
+            continue
+        if abs(leg2 - leg1) / (leg1 + _EPS) < leg_tol:
+            t_signal = min(tH2, N - 1)
+            if result[t_signal] == 0:
+                if mode == 'forming':
+                    result[t_signal] = 1
+                elif c[t_signal] > pH1:
+                    result[t_signal] = 1
     return result
 
 
@@ -1770,11 +1873,12 @@ def partial_rise(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         res = line_val(s_hi, i_hi, i)
         sup = line_val(s_lo, i_lo, i)
         band = res - sup
@@ -1805,11 +1909,12 @@ def partial_decline(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, window)
     for i in range(window, N):
-        s_hi, i_hi, s_lo, i_lo, ok = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, window)
-        if not ok:
+        if not OK[i]:
             continue
+        s_hi, i_hi, s_lo, i_lo = S_HI[i], I_HI[i], S_LO[i], I_LO[i]
         res = line_val(s_hi, i_hi, i)
         sup = line_val(s_lo, i_lo, i)
         band = res - sup
