@@ -33,8 +33,9 @@ test = ["pytest>=7.0", "pandas>=1.5"]
 docs = ["mkdocs>=1.5", "mkdocs-material>=9.0"]
 
 [project.urls]
-Documentation = "https://example.com/ta_patterns/docs"
-Source = "https://example.com/ta_patterns"
+Homepage = "https://github.com/AdventuresInDataScience/ta_patterns"
+Source = "https://github.com/AdventuresInDataScience/ta_patterns"
+Issues = "https://github.com/AdventuresInDataScience/ta_patterns/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
