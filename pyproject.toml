@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ta_patterns"
+version = "1.1.0"
+description = "Pure-numpy vectorised library of 300 candlestick and chart pattern detectors with no look-forward bias."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "ta_patterns contributors" }]
+keywords = [
+    "technical-analysis", "candlestick", "chart-patterns", "trading",
+    "finance", "harmonic-patterns", "numpy",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy>=1.22",
+]
+
+[project.optional-dependencies]
+pandas = ["pandas>=1.5"]
+test = ["pytest>=7.0", "pandas>=1.5"]
+docs = ["mkdocs>=1.5", "mkdocs-material>=9.0"]
+
+[project.urls]
+Documentation = "https://example.com/ta_patterns/docs"
+Source = "https://example.com/ta_patterns"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[tool.pytest.ini_options]
+# Let pytest import the package straight from src/ without an editable install.
+pythonpath = ["src"]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"

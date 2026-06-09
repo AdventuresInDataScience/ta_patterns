@@ -1,0 +1,20 @@
+site_name: ta_patterns
+site_description: 300 vectorised, point-in-time candlestick and chart pattern detectors
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quickstart: quickstart.md
+  - Core concepts: concepts.md
+  - API reference: api_reference.md
+  - Pattern catalog: patterns_catalog.md
+  - Examples: examples.md
+markdown_extensions:
+  - admonition
+  - tables
+  - fenced_code
+  - codehilite
