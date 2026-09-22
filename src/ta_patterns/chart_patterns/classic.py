@@ -1124,10 +1124,9 @@ def cup_with_handle(o, h, l, c,
     with np.errstate(invalid="ignore"):
         fire = have & (cup_depth / (left_rim + _EPS) >= 0.05)
 
-    # Right area is a fixed-length trailing window of closes: c[i-handle:i]
-    # NaN note: a mask AND suppresses the bar, where the loop's `if x < y:
-    # continue` fell through on NaN and could fire on corrupt data.  Refusing to
-    # signal on a window we cannot evaluate is the intended behaviour.
+    # Right area is a fixed-length trailing window of closes: c[i-handle:i].
+    # A NaN close makes right_max NaN, every comparison below False, and the bar
+    # does not fire -- a window whose shape is unknown yields no signal.
     right_max = trailing_windows(c, handle_window).max(axis=1)[start - handle_window:]
     fire &= right_max >= left_rim * 0.95
     with np.errstate(invalid="ignore"):
@@ -1176,7 +1175,7 @@ def inverted_cup_with_handle(o, h, l, c,
     with np.errstate(invalid="ignore"):
         fire = have & (cup_depth / (cup_top + _EPS) >= 0.05)
 
-    # NaN note: see cup_with_handle — a NaN window is suppressed, not fired.
+    # A NaN close suppresses the bar -- see cup_with_handle.
     right_min = trailing_windows(c, handle_window).min(axis=1)[start - handle_window:]
     fire &= right_min <= left_rim * 1.05
     with np.errstate(invalid="ignore"):
@@ -1212,9 +1211,8 @@ def rounding_bottom(o, h, l, c,
     mid   = W[:, third:2 * third].mean(axis=1)
     right = W[:, 2 * third:].mean(axis=1)
 
-    # np.minimum propagates NaN, where the loop's scalar min() returned whichever
-    # argument came first and so gave an order-dependent answer.  Propagating is
-    # the well-defined choice: an unevaluable window does not fire.
+    # np.minimum propagates NaN, so a window containing a NaN close does not
+    # fire.  Python's scalar min() would return whichever argument came first.
     outer = np.minimum(left, right)
     depth = (outer - mid) / (left + _EPS)
     fire  = (mid < outer) & (depth >= min_depth)
@@ -1244,7 +1242,7 @@ def rounding_top(o, h, l, c,
     mid   = W[:, third:2 * third].mean(axis=1)
     right = W[:, 2 * third:].mean(axis=1)
 
-    # See rounding_bottom on the min/max NaN semantics.
+    # NaN-propagating, as in rounding_bottom.
     outer  = np.maximum(left, right)
     height = (mid - outer) / (mid + _EPS)
     fire   = (mid > outer) & (height >= min_depth)

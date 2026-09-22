@@ -1,16 +1,44 @@
 # Performance refactor — what changed
 
-**Result: full 292-detector scan at 5,000 bars goes from 5,894 ms to 1,090 ms (5.4×).**
+**Result: a full 300-detector scan is 11–34× faster than before the refactor,
+and the gap widens with series length.**
+
+Measured against `fb6875e`, the last commit before this work, on identical
+inputs and the same machine — cold cache, best of three, each revision in its
+own interpreter:
+
+| Bars | `fb6875e` | current | speedup |
+|---|---|---|---|
+| 500 | 755 ms | 68 ms | 11× |
+| 1,254 (AAPL daily, 5y) | 2,587 ms | 181 ms | 14× |
+| 2,000 | 5,182 ms | 278 ms | 19× |
+| 5,000 | 25,792 ms | 769 ms | 34× |
+
+The ratio grows because the original was quadratic in bar count across most
+chart detectors. Split across the two stages, at 1,254 bars:
+
+| Stage | Time | Gain over previous |
+|---|---|---|
+| `fb6875e` — before the refactor | 2,587 ms | — |
+| `eafd56f` — pivot/window vectorisation | 841 ms | 3.1× |
+| current — sliding-window and prefix-sum rewrites, feature cache | 181 ms | 4.6× |
+
 Every detector produces **bit-identical output on finite input**. Four detector
 families deliberately changed how they treat NaN — see
 [NaN semantics](#nan-semantics) below. The candlestick half of the library was
 already fully vectorised and was not touched.
 
+Eight detectors remain super-linear (`abc_correction`, `measured_move_up`/
+`_down`, `hs_top`/`hs_bottom`, `busted_hs_*`, `complex_hs_*`): they search pivot
+pairs and triples, so cost grows with the square of the pivot count — 2.7× to
+6.7× worse than linear, and ~26% of a scan at 8,000 bars. They are the obvious
+next target.
+
 ---
 
 ## Verification
 
-Nothing here is trusted on inspection. Two independent checks:
+Nothing here is trusted on inspection:
 
 | Check | Scope | Result |
 |---|---|---|
@@ -88,29 +116,40 @@ bar. **This is what removed the super-linear blow-up.**
 
 ### 4. Shared-feature cache (`_memo.py`)
 Every chart detector independently recomputed `pivot_highs`/`pivot_lows` on the
-same arrays — ~200 redundant computations per scan (498 ms vs 2.5 ms for one).
-Now content-hash cached. Keys are array *contents*, not identity, so in-place
-mutation or buffer reuse cannot serve a stale result; values are returned as
-copies so one detector cannot corrupt another's view.
+same arrays. Those results are now content-hash cached: keys are array
+*contents*, not identity, so in-place mutation or buffer reuse cannot serve a
+stale result, and values are returned as copies so one detector cannot corrupt
+another's view. Bounded on both entry count (`TA_PATTERNS_CACHE_SIZE`) and
+payload bytes (`TA_PATTERNS_CACHE_BYTES`), and disabled by
+`TA_PATTERNS_NO_CACHE=1`.
+
+Worth being honest about the size of this win: the scanner already shares
+pivots within a single call, so on a full scan the cache is worth about
+**1.05–1.07×** (1,254 bars: 185 ms disabled vs 174 ms warm; 4,000 bars: 640 vs
+607). Pivot detection is only a few percent of total scan cost. The change that
+mattered was (3).
 
 ---
 
 ## Measured
 
-Full scan, N=5,000: **5,894 ms → 1,090 ms**. Candlestick portion: 9 ms → 8 ms.
+Full scan, N=5,000: **25,792 ms → 769 ms**. The candlestick half is unchanged
+at a few milliseconds — it was already vectorised.
 
-Worst offenders, and note the scaling — the quadratic cliff is gone:
+Worst offenders, `fb6875e` → current, on the same synthetic series. Note the
+scaling: the original roughly quadruples from 5k to 20k bars where the
+rewritten form roughly doubles, so the quadratic cliff is gone.
 
-| detector | 5k | 20k | 80k |
-|---|---|---|---|
-| `diamond_top` | 408 → **3.2** ms | 1,664 → **9.8** | 6,666 → **111** |
-| `rising_volume_trend` | 334 → **0.8** ms | 1,362 → **1.7** | 5,452 → **6.1** |
-| `double_top_adam_adam` | 195 → **2.2** ms | 824 → **5.4** | 3,003 → **20** |
-| `bump_and_run_top` | 128 → **1.6** ms | 527 → **4.9** | 2,190 → **43** |
-| `one_two_three` | 101 → **2.2** ms | 563 → **7.7** | 3,960 → **29** |
-| `cup_with_handle` | 80 → **9.5** ms | 319 → **6.6** | 1,275 → **24** |
-| `triple_top` | 62 → **1.2** ms | 252 → **3.1** | 1,035 → **11** |
-| `rounding_bottom` | 61 → **0.7** ms | 237 → **2.3** | 945 → **7.7** |
+| detector | 5,000 bars | 20,000 bars |
+|---|---|---|
+| `diamond_top` | 1,238 → **0.3** ms | 17,280 → **1.4** ms |
+| `bump_and_run_top` | 433 → **1.3** ms | 6,032 → **4.9** ms |
+| `cup_with_handle` | 347 → **1.4** ms | 5,789 → **5.7** ms |
+| `rising_volume_trend` | 167 → **0.2** ms | 700 → **1.0** ms |
+| `double_top_adam_adam` | 95 → **0.8** ms | 487 → **3.1** ms |
+| `one_two_three` | 69 → **1.5** ms | 402 → **7.5** ms |
+| `triple_top` | 49 → **1.0** ms | 292 → **3.9** ms |
+| `rounding_bottom` | 43 → **0.2** ms | 171 → **1.0** ms |
 
 ---
 
