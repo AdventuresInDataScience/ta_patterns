@@ -57,7 +57,7 @@ see the NON_DIRECTIONAL frozensets.  The net_score helpers sum only the
 directional (bullish/bearish) patterns, so non-directional and
 bidirectional patterns do not skew the score.
 """
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 # ── single bar ───────────────────────────────────────────────────────────────
 from .single import (
@@ -134,3 +134,6 @@ from .scanner import (
 
 # ── core utilities ────────────────────────────────────────────────────────────
 from ._core import atr, avg_body, _to_np
+
+# ── feature cache ─────────────────────────────────────────────────────────────
+from .chart_patterns._memo import clear_cache, cache_info
