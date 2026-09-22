@@ -42,8 +42,12 @@ where = ["src"]
 
 
 [tool.pytest.ini_options]
-# Let pytest import the package straight from src/ without an editable install.
-pythonpath = ["src"]
+# src: import the package straight from src/ without an editable install.
+# ".": the suite imports its helpers as `tests.synthetic`, so the repo root must
+# be importable.  Bare `pytest` does not add the working directory to sys.path
+# (only `python -m pytest` does), so without this the whole suite fails to
+# collect under the documented invocation.
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-q"
