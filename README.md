@@ -5,7 +5,7 @@ detectors** — **106 candlestick** patterns and **194 chart** patterns
 (short-bar, double/multi, classic-geometric, harmonic, volume, busted).
 No TA-Lib dependency.
 
-- **Version:** 1.1.1
+- **Version:** 1.2.0
 - **Python:** ≥ 3.10
 - **Dependencies:** `numpy` (required); `pandas` (optional, for the
   DataFrame helpers)
