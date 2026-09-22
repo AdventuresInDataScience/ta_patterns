@@ -5,57 +5,37 @@ detectors** — **106 candlestick** patterns and **194 chart** patterns
 (short-bar, double/multi, classic-geometric, harmonic, volume, busted).
 No TA-Lib dependency.
 
-- **Version:** 1.2.0
+Every detector returns a signed `int8` array (`+1` bullish / `-1` bearish /
+`0` none) and is **point-in-time safe** — the value at bar *i* depends only
+on bars `0..i`, so a column can go straight into a backtest without
+look-ahead.
+
 - **Python:** ≥ 3.10
 - **Dependencies:** `numpy` (required); `pandas` (optional, for the
   DataFrame helpers)
-
-Every detector returns a signed `int8` array (`+1` bullish / `-1` bearish /
-`0` none) and is **point-in-time safe** — the value at bar *i* depends only
-on bars `0..i`.
-
-## Project layout
-
-```
-.
-├── pyproject.toml          # build metadata, deps, pytest config
-├── README.md
-├── mkdocs.yml              # docs site config
-├── run_tests.py            # zero-dependency test runner (pytest fallback)
-├── .github/workflows/      # publish.yml — test, build and release on a v* tag
-├── src/
-│   └── ta_patterns/        # the package (src layout)
-│       ├── __init__.py     # public candlestick API + re-exports
-│       ├── _core.py        # shared numeric helpers
-│       ├── scanner.py      # scan_all_patterns, net_score_all, batch_all, ...
-│       ├── single.py two_bar.py three_bar.py multi_bar.py   # 106 candlesticks
-│       └── chart_patterns/ # 194 chart patterns (own pivot engine + scanner)
-│           ├── _core.py scanner.py
-│           ├── _memo.py _windows.py    # feature cache, sliding-window helpers
-│           └── short.py double_multi.py classic.py harmonic.py
-│               volume.py busted.py
-├── tests/                  # pytest suite (also runnable via run_tests.py)
-├── examples/               # end_to_end.ipynb — walkthrough on real data
-├── tools/                  # golden.py (output regression), bench.py (timings)
-└── docs/                   # full documentation (mkdocs)
-```
-
-> **Why a `chart_patterns/` sub-package?** Candlestick detectors work
-> bar-by-bar; chart detectors need a pivot/swing engine, their own scanner,
-> and a separate `_core`. Keeping them as a sub-package isolates that
-> machinery (and avoids two `_core`/`scanner` modules colliding). The two
-> families are still scanned together via `scan_all_patterns`.
+- **Source:** <https://github.com/AdventuresInDataScience/ta_patterns>
 
 ## Install
 
 ```bash
-pip install .                  # or: pip install -e ".[test,docs]"
+pip install ta_patterns
+```
+
+With the optional pandas helpers (`batch_all`, `to_dataframe`, `chart_batch`):
+
+```bash
+pip install "ta_patterns[pandas]"
 ```
 
 ## Quickstart
 
 ```python
+import pandas as pd
 import ta_patterns as tap
+import ta_patterns.chart_patterns as cp
+
+df = pd.read_csv("ohlcv.csv", parse_dates=["date"]).set_index("date")
+o, h, l, c, v = df.open, df.high, df.low, df.close, df.volume
 
 sig     = tap.hammer(o, h, l, c)                 # one pattern -> int8 array
 signals = tap.scan_all_patterns(o, h, l, c, v=v) # all 300 -> {name: array}
@@ -63,23 +43,15 @@ score   = tap.net_score_all(o, h, l, c, v=v)     # net directional score
 table   = tap.batch_all(o, h, l, c, v=v)         # wide pandas DataFrame
 ```
 
-## End-to-end walkthrough
+NumPy arrays work equally well; pandas indexes are stripped automatically.
+Every threshold that defines a shape is a keyword argument:
 
-**[`examples/end_to_end.ipynb`](examples/end_to_end.ipynb)** is a vignette on
-real market data — five years of daily bars for four symbols via `yfinance`,
-from a single detector through the full 300-column signal matrix to end-to-end
-timings. It is committed **with its outputs**, so it reads as documentation
-without running anything.
-
-```bash
-pip install yfinance jupyter
-jupyter lab examples/end_to_end.ipynb
+```python
+tap.hammer(o, h, l, c, shadow_factor=1.5, require_trend=False)
+cp.double_top(o, h, l, c, pivot_n=3, tol=0.06, mode="forming")
 ```
 
-Downloads are cached under `examples/_data/`, and the notebook carries a
-synthetic series generator if you have no network.
-
-### What the columns look like
+## What the columns look like
 
 `batch_all` returns one `int8` column per pattern, aligned to your bars:
 
@@ -102,7 +74,24 @@ date
 Roughly 5% of cells are non-zero on daily equity data — about 16 simultaneous
 signals per bar across all 300 detectors.
 
-### Benchmarks
+## End-to-end walkthrough
+
+**[`examples/end_to_end.ipynb`](https://github.com/AdventuresInDataScience/ta_patterns/blob/main/examples/end_to_end.ipynb)**
+is a vignette on real market data — five years of daily bars for four symbols
+via `yfinance`, from a single detector through the full 300-column signal
+matrix to end-to-end timings. It is committed **with its outputs**, so it
+renders as documentation on GitHub without being run.
+
+To run it yourself:
+
+```bash
+git clone https://github.com/AdventuresInDataScience/ta_patterns
+cd ta_patterns
+pip install -e ".[test]" yfinance jupyter
+jupyter lab examples/end_to_end.ipynb
+```
+
+## Benchmarks
 
 AAPL daily, 1,254 bars, Python 3.12 / NumPy 2.1, single core:
 
@@ -130,39 +119,33 @@ grows with the square of the pivot count — 2.8× to 7.1× worse than linear, a
 you scan decades of data. The notebook's last section prints this breakdown for
 your own machine and data.
 
-### Speedup vs. the pre-refactor implementation
+### Speedup over earlier releases
 
-Same inputs, same machine, cold cache, best of three:
+1.2.0 rewrote the chart detectors around sliding windows, prefix sums and
+pivot-indexed search. Identical inputs, same machine, cold cache, best of
+three:
 
-| Bars | `fb6875e` (original) | current | speedup |
-|---|---|---|---|
-| 500 | 755 ms | 68 ms | **11×** |
-| 1,254 (AAPL) | 2,587 ms | 181 ms | **14×** |
-| 2,000 | 5,182 ms | 278 ms | **19×** |
-| 5,000 | 25,792 ms | 769 ms | **34×** |
+| Bars | 1.1.0 | 1.1.1 | 1.2.x | vs 1.1.1 | vs 1.1.0 |
+|---|---|---|---|---|---|
+| 500 | 755 ms | 329 ms | 68 ms | 4.8× | 11× |
+| 1,254 | 2,640 ms | 865 ms | 171 ms | 5.1× | 15× |
+| 2,000 | 5,182 ms | 1,408 ms | 278 ms | 5.1× | 19× |
+| 5,000 | 25,792 ms | 3,761 ms | 769 ms | 4.9× | 34× |
 
-The gap widens with series length because the original was quadratic in the
-bar count across most chart detectors.
+The gap over 1.1.0 widens with series length because that version was
+quadratic in the bar count across most chart detectors.
 
-See [`docs/`](docs/index.md) for the full guide:
+## Documentation
 
-- [Installation](docs/installation.md)
-- [Quickstart](docs/quickstart.md)
-- [Core concepts](docs/concepts.md)
-- [API reference](docs/api_reference.md)
-- [Pattern catalog](docs/patterns_catalog.md)
-- [Examples](docs/examples.md)
+Full guide at
+[the docs directory](https://github.com/AdventuresInDataScience/ta_patterns/tree/main/docs):
 
-## Tests
-
-```bash
-pytest               # preferred
-python run_tests.py  # zero-dependency fallback
-```
-
-The suite enforces the library's guarantees across the whole catalog:
-output dtype/length/range, sign-vs-classification, no look-ahead, and
-textbook firing cases for every pattern family.
+- [Installation](https://github.com/AdventuresInDataScience/ta_patterns/blob/main/docs/installation.md)
+- [Quickstart](https://github.com/AdventuresInDataScience/ta_patterns/blob/main/docs/quickstart.md)
+- [Core concepts](https://github.com/AdventuresInDataScience/ta_patterns/blob/main/docs/concepts.md)
+- [API reference](https://github.com/AdventuresInDataScience/ta_patterns/blob/main/docs/api_reference.md)
+- [Pattern catalog](https://github.com/AdventuresInDataScience/ta_patterns/blob/main/docs/patterns_catalog.md)
+- [Examples](https://github.com/AdventuresInDataScience/ta_patterns/blob/main/docs/examples.md)
 
 ## Design guarantees
 
@@ -181,3 +164,61 @@ textbook firing cases for every pattern family.
   deterministic OHLC rule.
 - Five chart patterns are volume-based and run only when a volume array is
   supplied (295 from OHLC alone, 300 with volume).
+
+## Contributing
+
+```bash
+git clone https://github.com/AdventuresInDataScience/ta_patterns
+cd ta_patterns
+pip install -e ".[test,docs]"
+
+pytest               # preferred
+python run_tests.py  # zero-dependency fallback
+```
+
+The suite enforces the library's guarantees across the whole catalog:
+output dtype/length/range, sign-vs-classification, no look-ahead, and
+textbook firing cases for every pattern family.
+
+`tools/golden.py check` additionally asserts that no detector's output has
+moved on a set of fixed series — run it before and after any change to the
+detector internals.
+
+<details>
+<summary>Repository layout</summary>
+
+```
+.
+├── pyproject.toml          # build metadata, deps, pytest config
+├── README.md
+├── mkdocs.yml              # docs site config
+├── run_tests.py            # zero-dependency test runner (pytest fallback)
+├── .github/workflows/      # publish.yml — test, build and release on a v* tag
+├── src/
+│   └── ta_patterns/        # the package (src layout)
+│       ├── __init__.py     # public candlestick API + re-exports
+│       ├── _core.py        # shared numeric helpers
+│       ├── scanner.py      # scan_all_patterns, net_score_all, batch_all, ...
+│       ├── single.py two_bar.py three_bar.py multi_bar.py   # 106 candlesticks
+│       └── chart_patterns/ # 194 chart patterns (own pivot engine + scanner)
+│           ├── _core.py scanner.py
+│           ├── _memo.py _windows.py    # feature cache, sliding-window helpers
+│           └── short.py double_multi.py classic.py harmonic.py
+│               volume.py busted.py
+├── tests/                  # pytest suite (also runnable via run_tests.py)
+├── examples/               # end_to_end.ipynb — walkthrough on real data
+├── tools/                  # golden.py (output regression), bench.py (timings)
+└── docs/                   # full documentation (mkdocs)
+```
+
+**Why a `chart_patterns/` sub-package?** Candlestick detectors work
+bar-by-bar; chart detectors need a pivot/swing engine, their own scanner,
+and a separate `_core`. Keeping them as a sub-package isolates that
+machinery (and avoids two `_core`/`scanner` modules colliding). The two
+families are still scanned together via `scan_all_patterns`.
+
+</details>
+
+## License
+
+MIT

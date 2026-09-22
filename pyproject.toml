@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ta_patterns"
-version = "1.2.0"
+version = "1.2.1"
 description = "Pure-numpy vectorised library of 300 candlestick and chart pattern detectors with no look-forward bias."
 readme = "README.md"
 requires-python = ">=3.10"
