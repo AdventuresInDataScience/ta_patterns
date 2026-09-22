@@ -22,6 +22,7 @@ on bars `0..i`.
 ├── README.md
 ├── mkdocs.yml              # docs site config
 ├── run_tests.py            # zero-dependency test runner (pytest fallback)
+├── .github/workflows/      # publish.yml — test, build and release on a v* tag
 ├── src/
 │   └── ta_patterns/        # the package (src layout)
 │       ├── __init__.py     # public candlestick API + re-exports
