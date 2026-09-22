@@ -21,6 +21,8 @@ Those are reimported directly to avoid code duplication:
 from __future__ import annotations
 import numpy as np
 from .._core import _to_np, uptrend, downtrend, _EPS
+from numpy.lib.stride_tricks import sliding_window_view
+from ._windows import trailing_windows, RangeAgg
 
 _a = _to_np
 
@@ -105,6 +107,45 @@ def two_b_bottom(o, h, l, c, lookback: int = 5, tol: float = 0.01) -> np.ndarray
 # 1-2-3 trend change  (three-pivot reversal)
 # ---------------------------------------------------------------------------
 
+def _one_two_three(c, main_idx, sec_idx, main_px, sec_px, N, window,
+                   is_bottom):
+    """Vectorised core for the 1-2-3 reversal pair.
+
+    The original filtered the whole pivot array with a boolean mask on every
+    bar, which is O(N*P).  Both pivot arrays are sorted, so the in-window slice
+    and the "first opposite pivot after point 1" lookup are ``searchsorted``
+    gathers evaluated for all bars at once.
+    """
+    result = np.zeros(N, dtype=np.int8)
+    if window >= N or len(main_idx) < 2 or len(sec_idx) == 0:
+        return result
+
+    i = np.arange(window, N)
+    a = np.searchsorted(main_idx, i - window, side='left')
+    b = np.searchsorted(main_idx, i, side='left')
+    have = (b - a) >= 2
+
+    j1 = np.clip(b - 2, 0, len(main_idx) - 1)
+    j3 = np.clip(b - 1, 0, len(main_idx) - 1)
+    p1, p3 = main_idx[j1], main_idx[j3]
+
+    # point 2 = first opposite pivot strictly after point 1, still in window
+    bh = np.searchsorted(sec_idx, i, side='left')
+    k = np.searchsorted(sec_idx, p1, side='right')
+    have &= k < bh
+    kk = np.clip(k, 0, len(sec_idx) - 1)
+    p2 = sec_idx[kk]
+
+    fire = have & (p2 < p3)
+    # point 3 must retrace less far than point 1
+    fire &= (main_px[p3] > main_px[p1]) if is_bottom else (main_px[p3] < main_px[p1])
+    # breakout through point 2
+    fire &= (c[window:] > sec_px[p2]) if is_bottom else (c[window:] < sec_px[p2])
+
+    result[window:] = np.where(fire, 1 if is_bottom else -1, 0)
+    return result
+
+
 def one_two_three_bottom(o, h, l, c, window: int = 20,
                           pivot_n: int = 3, tol: float = 0.01) -> np.ndarray:
     """
@@ -118,29 +159,9 @@ def one_two_three_bottom(o, h, l, c, window: int = 20,
     ph_mask = pit_pivot_highs(h, pivot_n)
     pl_mask = pit_pivot_lows(l, pivot_n)
     N = len(c)
-    result = np.zeros(N, dtype=np.int8)
     ph_idx = np.where(ph_mask)[0]
     pl_idx = np.where(pl_mask)[0]
-    for i in range(window, N):
-        # Find last 3 pivot lows and 1 pivot high in window
-        pl_in_win = pl_idx[(pl_idx >= i - window) & (pl_idx < i)]
-        ph_in_win = ph_idx[(ph_idx >= i - window) & (ph_idx < i)]
-        if len(pl_in_win) < 2 or len(ph_in_win) < 1:
-            continue
-        p1, p3 = pl_in_win[-2], pl_in_win[-1]
-        p2 = ph_in_win[ph_in_win > p1]
-        if len(p2) == 0:
-            continue
-        p2 = p2[0]
-        if p2 >= p3:
-            continue
-        # p3 must be a higher low than p1
-        if l[p3] <= l[p1]:
-            continue
-        # Current close must break above point-2 high
-        if c[i] > h[p2]:
-            result[i] = 1
-    return result
+    return _one_two_three(c, pl_idx, ph_idx, l, h, N, window, is_bottom=True)
 
 
 def one_two_three_top(o, h, l, c, window: int = 20,
@@ -155,26 +176,9 @@ def one_two_three_top(o, h, l, c, window: int = 20,
     ph_mask = pit_pivot_highs(h, pivot_n)
     pl_mask = pit_pivot_lows(l, pivot_n)
     N = len(c)
-    result = np.zeros(N, dtype=np.int8)
     ph_idx = np.where(ph_mask)[0]
     pl_idx = np.where(pl_mask)[0]
-    for i in range(window, N):
-        ph_in_win = ph_idx[(ph_idx >= i - window) & (ph_idx < i)]
-        pl_in_win = pl_idx[(pl_idx >= i - window) & (pl_idx < i)]
-        if len(ph_in_win) < 2 or len(pl_in_win) < 1:
-            continue
-        p1, p3 = ph_in_win[-2], ph_in_win[-1]
-        p2 = pl_in_win[pl_in_win > p1]
-        if len(p2) == 0:
-            continue
-        p2 = p2[0]
-        if p2 >= p3:
-            continue
-        if h[p3] >= h[p1]:
-            continue
-        if c[i] < l[p2]:
-            result[i] = -1
-    return result
+    return _one_two_three(c, ph_idx, pl_idx, h, l, N, window, is_bottom=False)
 
 
 # ---------------------------------------------------------------------------
@@ -874,10 +878,12 @@ def wide_ranging_day_up(o, h, l, c, factor: float = 2.0,
     rng = h - l
     N   = len(c)
     result = np.zeros(N, dtype=np.int8)
-    for i in range(lookback, N):
-        avg_rng = rng[i-lookback:i].mean()
-        if rng[i] > factor * avg_rng and c[i] > (h[i] + l[i]) / 2.0:
-            result[i] = 1
+    if lookback >= N:
+        return result
+    avg_rng = trailing_windows(rng, lookback).mean(axis=1)
+    fire = (rng[lookback:] > factor * avg_rng) & \
+           (c[lookback:] > (h[lookback:] + l[lookback:]) / 2.0)
+    result[lookback:] = np.where(fire, 1, 0)
     return result
 
 
@@ -891,10 +897,12 @@ def wide_ranging_day_down(o, h, l, c, factor: float = 2.0,
     rng = h - l
     N   = len(c)
     result = np.zeros(N, dtype=np.int8)
-    for i in range(lookback, N):
-        avg_rng = rng[i-lookback:i].mean()
-        if rng[i] > factor * avg_rng and c[i] < (h[i] + l[i]) / 2.0:
-            result[i] = -1
+    if lookback >= N:
+        return result
+    avg_rng = trailing_windows(rng, lookback).mean(axis=1)
+    fire = (rng[lookback:] > factor * avg_rng) & \
+           (c[lookback:] < (h[lookback:] + l[lookback:]) / 2.0)
+    result[lookback:] = np.where(fire, -1, 0)
     return result
 
 
@@ -1471,10 +1479,11 @@ def elevator_stop(o, h, l, c, window: int = 5, tol: float = 0.005) -> np.ndarray
     o, h, l, c = (_a(x) for x in (o, h, l, c))
     N = len(c)
     result = np.zeros(N, dtype=np.int8)
-    for i in range(window, N):
-        w = c[i-window+1:i+1]
-        if (w.max() - w.min()) / (w.mean() + _EPS) < tol:
-            result[i] = 1
+    if window >= N:
+        return result
+    W = sliding_window_view(np.ascontiguousarray(c), window)   # rows end at i
+    band = (W.max(axis=1) - W.min(axis=1)) / (W.mean(axis=1) + _EPS)
+    result[window:] = np.where(band[1:] < tol, 1, 0)
     return result
 
 
@@ -1491,11 +1500,13 @@ def cloud_bank(o, h, l, c, window: int = 20, tol: float = 0.03) -> np.ndarray:
     o, h, l, c = (_a(x) for x in (o, h, l, c))
     N = len(c)
     result = np.zeros(N, dtype=np.int8)
-    for i in range(window, N):
-        w = c[i-window:i]
-        band = (w.max() - w.min()) / (w.mean() + _EPS)
-        if band < tol and c[i] >= w.min() * 0.99:
-            result[i] = 1
+    if window >= N:
+        return result
+    W = trailing_windows(c, window)
+    wmin = W.min(axis=1)
+    band = (W.max(axis=1) - wmin) / (W.mean(axis=1) + _EPS)
+    fire = (band < tol) & (c[window:] >= wmin * 0.99)
+    result[window:] = np.where(fire, 1, 0)
     return result
 
 
@@ -1514,13 +1525,18 @@ def flat_base(o, h, l, c, window: int = 20,
     N = len(c)
     result = np.zeros(N, dtype=np.int8)
     prior_up = uptrend(c, trend_n)
-    for i in range(window + trend_n, N):
-        w_h = h[i-window:i]
-        w_l = l[i-window:i]
-        w_c = c[i-window:i]
-        band = (w_h.max() - w_l.min()) / (w_c.mean() + _EPS)
-        if band < max_range_pct and prior_up[i - window]:
-            result[i] = 1
+    start = window + trend_n
+    if start >= N:
+        return result
+
+    Wh = trailing_windows(h, window)
+    Wl = trailing_windows(l, window)
+    Wc = trailing_windows(c, window)
+    band = (Wh.max(axis=1) - Wl.min(axis=1)) / (Wc.mean(axis=1) + _EPS)
+
+    k = np.arange(window, N) - window            # row index == i - window
+    fire = (band < max_range_pct) & prior_up[k] & (k >= trend_n)
+    result[window:] = np.where(fire, 1, 0)
     return result
 
 

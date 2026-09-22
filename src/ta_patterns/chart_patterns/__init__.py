@@ -138,3 +138,7 @@ from .scanner import (
     BULLISH, BEARISH, BIDIRECTIONAL, NON_DIRECTIONAL,
     DIRECTIONAL, CHART_PATTERNS,
 )
+
+# Feature cache controls (see ._memo) — pivot/trendline results are memoised
+# across detectors within a scan.
+from ._memo import clear_cache, cache_info

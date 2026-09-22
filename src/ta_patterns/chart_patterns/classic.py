@@ -18,6 +18,8 @@ an omission.
 """
 from __future__ import annotations
 import numpy as np
+from ._memo import array_key, memoized
+from ._windows import trailing_windows, RangeAgg
 from ._core import (
     _a, _EPS, pivot_highs, pivot_lows, pivot_info,
     fit_line_r2 as fit_line, line_val, lines_converging, apex_bar,
@@ -303,7 +305,18 @@ def _sliding_trendlines(t_ph, p_ph, t_pl, p_pl, N, window, min_pivots=2):
 
     Returns ``(S_HI, I_HI, S_LO, I_LO, OK)`` arrays of length N where ``OK[i]``
     matches the old ``ok`` flag (enough pivots in window *and* both r² ≥ 0.5).
+
+    Memoised on pivot contents: ~22 detectors request the identical fit with the
+    default ``window=100, pivot_n=5``, so in a full scan this is computed once.
     """
+    keys = [array_key(x) for x in (t_ph, p_ph, t_pl, p_pl)]
+    key = None if any(k is None for k in keys) else \
+        ("trend", tuple(keys), N, window, min_pivots)
+    return memoized(key, lambda: _sliding_trendlines_impl(
+        t_ph, p_ph, t_pl, p_pl, N, window, min_pivots))
+
+
+def _sliding_trendlines_impl(t_ph, p_ph, t_pl, p_pl, N, window, min_pivots=2):
     s_hi, i_hi, r2_hi, n_hi = _sliding_fit(t_ph, p_ph, window, N)
     s_lo, i_lo, r2_lo, n_lo = _sliding_fit(t_pl, p_pl, window, N)
     ok = ((n_hi >= min_pivots) & (n_lo >= min_pivots)
@@ -1088,43 +1101,40 @@ def cup_with_handle(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
-    for i in range(cup_window + handle_window, N):
-        cup_start = i - cup_window - handle_window
-        handle_start = i - handle_window
+    start = cup_window + handle_window
+    if start >= N:
+        return result
+    i = np.arange(start, N)
+    cup_start    = i - cup_window - handle_window
+    handle_start = i - handle_window
 
-        # Left rim: highest point in cup region.  t_ph is sorted, so the cup
-        # span [cup_start, handle_start) is a contiguous slice (searchsorted),
-        # avoiding an O(P) re-scan of every pivot on every bar.
-        a_h = np.searchsorted(t_ph, cup_start, "left")
-        b_h = np.searchsorted(t_ph, handle_start, "left")
-        if b_h <= a_h:
-            continue
-        left_rim_price = p_ph[a_h:b_h].max()
+    # Range max/min over the cup's pivot span.  The span bounds move with i, so
+    # a sparse table answers all N queries in O(1) each instead of re-slicing
+    # and re-reducing the pivot arrays on every bar.
+    a_h = np.searchsorted(t_ph, cup_start, "left")
+    b_h = np.searchsorted(t_ph, handle_start, "left")
+    a_l = np.searchsorted(t_pl, cup_start, "left")
+    b_l = np.searchsorted(t_pl, handle_start, "left")
 
-        # Cup bottom: lowest point in cup
-        a_l = np.searchsorted(t_pl, cup_start, "left")
-        b_l = np.searchsorted(t_pl, handle_start, "left")
-        if b_l <= a_l:
-            continue
-        cup_bottom = p_pl[a_l:b_l].min()
-        cup_depth  = left_rim_price - cup_bottom
-        if cup_depth / (left_rim_price + _EPS) < 0.05:
-            continue                         # cup too shallow
+    have = (b_h > a_h) & (b_l > a_l)
+    left_rim = RangeAgg(p_ph, "max").query(a_h, b_h)
+    cup_bot  = RangeAgg(p_pl, "min").query(a_l, b_l)
 
-        # Right rim: price should recover near left rim
-        right_area = c[handle_start:i]
-        if len(right_area) == 0 or right_area.max() < left_rim_price * 0.95:
-            continue
+    cup_depth = left_rim - cup_bot
+    with np.errstate(invalid="ignore"):
+        fire = have & (cup_depth / (left_rim + _EPS) >= 0.05)
 
-        # Handle: limited pullback
-        handle_drop = (right_area.max() - c[i]) / (cup_depth + _EPS)
-        if handle_drop > max_handle_retrace:
-            continue
-
-        if mode == 'forming':
-            result[i] = 1
-        elif c[i] > left_rim_price:
-            result[i] = 1
+    # Right area is a fixed-length trailing window of closes: c[i-handle:i]
+    # NaN note: a mask AND suppresses the bar, where the loop's `if x < y:
+    # continue` fell through on NaN and could fire on corrupt data.  Refusing to
+    # signal on a window we cannot evaluate is the intended behaviour.
+    right_max = trailing_windows(c, handle_window).max(axis=1)[start - handle_window:]
+    fire &= right_max >= left_rim * 0.95
+    with np.errstate(invalid="ignore"):
+        fire &= (right_max - c[start:]) / (cup_depth + _EPS) <= max_handle_retrace
+    if mode != 'forming':
+        fire &= c[start:] > left_rim
+    result[start:] = np.where(fire, 1, 0)
     return result
 
 
@@ -1146,37 +1156,34 @@ def inverted_cup_with_handle(o, h, l, c,
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
     result = np.zeros(N, dtype=np.int8)
 
-    for i in range(cup_window + handle_window, N):
-        cup_start    = i - cup_window - handle_window
-        handle_start = i - handle_window
+    start = cup_window + handle_window
+    if start >= N:
+        return result
+    i = np.arange(start, N)
+    cup_start    = i - cup_window - handle_window
+    handle_start = i - handle_window
 
-        a_l = np.searchsorted(t_pl, cup_start, "left")
-        b_l = np.searchsorted(t_pl, handle_start, "left")
-        if b_l <= a_l:
-            continue
-        left_rim_price = p_pl[a_l:b_l].min()
+    a_l = np.searchsorted(t_pl, cup_start, "left")
+    b_l = np.searchsorted(t_pl, handle_start, "left")
+    a_h = np.searchsorted(t_ph, cup_start, "left")
+    b_h = np.searchsorted(t_ph, handle_start, "left")
 
-        a_h = np.searchsorted(t_ph, cup_start, "left")
-        b_h = np.searchsorted(t_ph, handle_start, "left")
-        if b_h <= a_h:
-            continue
-        cup_top   = p_ph[a_h:b_h].max()
-        cup_depth = cup_top - left_rim_price
-        if cup_depth / (cup_top + _EPS) < 0.05:
-            continue
+    have = (b_l > a_l) & (b_h > a_h)
+    left_rim = RangeAgg(p_pl, "min").query(a_l, b_l)
+    cup_top  = RangeAgg(p_ph, "max").query(a_h, b_h)
 
-        right_area = c[handle_start:i]
-        if len(right_area) == 0 or right_area.min() > left_rim_price * 1.05:
-            continue
+    cup_depth = cup_top - left_rim
+    with np.errstate(invalid="ignore"):
+        fire = have & (cup_depth / (cup_top + _EPS) >= 0.05)
 
-        handle_rise = (c[i] - right_area.min()) / (cup_depth + _EPS)
-        if handle_rise > max_handle_retrace:
-            continue
-
-        if mode == 'forming':
-            result[i] = -1
-        elif c[i] < left_rim_price:
-            result[i] = -1
+    # NaN note: see cup_with_handle — a NaN window is suppressed, not fired.
+    right_min = trailing_windows(c, handle_window).min(axis=1)[start - handle_window:]
+    fire &= right_min <= left_rim * 1.05
+    with np.errstate(invalid="ignore"):
+        fire &= (c[start:] - right_min) / (cup_depth + _EPS) <= max_handle_retrace
+    if mode != 'forming':
+        fire &= c[start:] < left_rim
+    result[start:] = np.where(fire, -1, 0)
     return result
 
 
@@ -1197,19 +1204,23 @@ def rounding_bottom(o, h, l, c,
     N = len(c)
     result = np.zeros(N, dtype=np.int8)
     third = window // 3
+    W = trailing_windows(c, window)
+    if len(W) == 0:
+        return result
 
-    for i in range(window, N):
-        w = c[i - window:i]
-        left_mean  = w[:third].mean()
-        mid_mean   = w[third:2 * third].mean()
-        right_mean = w[2 * third:].mean()
-        depth = (min(left_mean, right_mean) - mid_mean) / (left_mean + _EPS)
-        if mid_mean < min(left_mean, right_mean) and depth >= min_depth:
-            rim = max(left_mean, right_mean)
-            if mode == 'forming':
-                result[i] = 1
-            elif c[i] > rim:
-                result[i] = 1
+    left  = W[:, :third].mean(axis=1)
+    mid   = W[:, third:2 * third].mean(axis=1)
+    right = W[:, 2 * third:].mean(axis=1)
+
+    # np.minimum propagates NaN, where the loop's scalar min() returned whichever
+    # argument came first and so gave an order-dependent answer.  Propagating is
+    # the well-defined choice: an unevaluable window does not fire.
+    outer = np.minimum(left, right)
+    depth = (outer - mid) / (left + _EPS)
+    fire  = (mid < outer) & (depth >= min_depth)
+    if mode != 'forming':
+        fire &= c[window:] > np.maximum(left, right)      # close above the rim
+    result[window:] = np.where(fire, 1, 0)
     return result
 
 
@@ -1225,19 +1236,21 @@ def rounding_top(o, h, l, c,
     N = len(c)
     result = np.zeros(N, dtype=np.int8)
     third = window // 3
+    W = trailing_windows(c, window)
+    if len(W) == 0:
+        return result
 
-    for i in range(window, N):
-        w = c[i - window:i]
-        left_mean  = w[:third].mean()
-        mid_mean   = w[third:2 * third].mean()
-        right_mean = w[2 * third:].mean()
-        height = (mid_mean - max(left_mean, right_mean)) / (mid_mean + _EPS)
-        if mid_mean > max(left_mean, right_mean) and height >= min_depth:
-            neckline = min(left_mean, right_mean)
-            if mode == 'forming':
-                result[i] = -1
-            elif c[i] < neckline:
-                result[i] = -1
+    left  = W[:, :third].mean(axis=1)
+    mid   = W[:, third:2 * third].mean(axis=1)
+    right = W[:, 2 * third:].mean(axis=1)
+
+    # See rounding_bottom on the min/max NaN semantics.
+    outer  = np.maximum(left, right)
+    height = (mid - outer) / (mid + _EPS)
+    fire   = (mid > outer) & (height >= min_depth)
+    if mode != 'forming':
+        fire &= c[window:] < np.minimum(left, right)      # close below neckline
+    result[window:] = np.where(fire, -1, 0)
     return result
 
 
@@ -1260,28 +1273,28 @@ def diamond_top(o, h, l, c,
     ph = _ph(h, pivot_n, pivot_pct)
     pl = _pl(l, pivot_n, pivot_pct)
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
-    result = np.zeros(N, dtype=np.int8)
     half = window // 2
 
-    for i in range(window, N):
-        # First half: broadening (diverging lines)
-        s_hi1, i_hi1, s_lo1, i_lo1, ok1 = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i - half, half)
-        # Second half: contracting (converging lines)
-        s_hi2, i_hi2, s_lo2, i_lo2, ok2 = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, half)
-        if not (ok1 and ok2):
-            continue
-        broadening = (s_hi1 > 0 and s_lo1 < 0)   # first half expanding
-        contracting = lines_converging(s_hi2, s_lo2, i_hi2, i_lo2, i - half)
-        if not (broadening and contracting):
-            continue
-        sup = line_val(s_lo2, i_lo2, i)
-        if mode == 'forming':
-            result[i] = -1
-        elif c[i] < sup:
-            result[i] = -1
-    return result
+    # One vectorised pass gives the half-window fit ending at EVERY bar.  The
+    # pattern's "first half" fit is that same array shifted back by `half`, so
+    # both legs of the diamond come from a single O(N) computation instead of
+    # two scalar least-squares fits per bar.
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, half)
+
+    i = np.arange(N)
+    j = i - half                                  # first-half end bar
+    valid = i >= window
+    ok = np.zeros(N, dtype=bool)
+    ok[valid] = OK[valid] & OK[j[valid]]
+
+    s_hi1 = np.where(valid, S_HI[j.clip(0)], 0.0)
+    s_lo1 = np.where(valid, S_LO[j.clip(0)], 0.0)
+
+    fire = ok & (s_hi1 > 0) & (s_lo1 < 0) & (S_LO > S_HI)
+    if mode != 'forming':
+        fire &= c < (S_LO * i + I_LO)             # close below support
+    return np.where(fire, -1, 0).astype(np.int8)
 
 
 def diamond_bottom(o, h, l, c,
@@ -1298,26 +1311,24 @@ def diamond_bottom(o, h, l, c,
     ph = _ph(h, pivot_n, pivot_pct)
     pl = _pl(l, pivot_n, pivot_pct)
     t_ph, p_ph, t_pl, p_pl = _scan(h, l, c, ph, pl, pivot_n)
-    result = np.zeros(N, dtype=np.int8)
     half = window // 2
 
-    for i in range(window, N):
-        s_hi1, i_hi1, s_lo1, i_lo1, ok1 = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i - half, half)
-        s_hi2, i_hi2, s_lo2, i_lo2, ok2 = _triangle_lines(
-            t_ph, p_ph, t_pl, p_pl, i, half)
-        if not (ok1 and ok2):
-            continue
-        broadening = (s_hi1 > 0 and s_lo1 < 0)
-        contracting = lines_converging(s_hi2, s_lo2, i_hi2, i_lo2, i - half)
-        if not (broadening and contracting):
-            continue
-        res = line_val(s_hi2, i_hi2, i)
-        if mode == 'forming':
-            result[i] = 1
-        elif c[i] > res:
-            result[i] = 1
-    return result
+    S_HI, I_HI, S_LO, I_LO, OK = _sliding_trendlines(
+        t_ph, p_ph, t_pl, p_pl, N, half)
+
+    i = np.arange(N)
+    j = i - half
+    valid = i >= window
+    ok = np.zeros(N, dtype=bool)
+    ok[valid] = OK[valid] & OK[j[valid]]
+
+    s_hi1 = np.where(valid, S_HI[j.clip(0)], 0.0)
+    s_lo1 = np.where(valid, S_LO[j.clip(0)], 0.0)
+
+    fire = ok & (s_hi1 > 0) & (s_lo1 < 0) & (S_LO > S_HI)
+    if mode != 'forming':
+        fire &= c > (S_HI * i + I_HI)             # close above resistance
+    return np.where(fire, 1, 0).astype(np.int8)
 
 
 # ---------------------------------------------------------------------------
@@ -1344,33 +1355,24 @@ def bump_and_run_top(o, h, l, c,
     result = np.zeros(N, dtype=np.int8)
     total = lead_window + bump_window
 
-    for i in range(total, N):
-        # Lead-in trendline (older portion).  t_pl sorted → contiguous slices
-        # via searchsorted instead of an O(P) re-scan per bar.
-        a_le = np.searchsorted(t_pl, i - total, "left")
-        b_le = np.searchsorted(t_pl, i - bump_window, "left")
-        if (b_le - a_le) < 2:
-            continue
-        x_l = t_pl[a_le:b_le].astype(float)
-        y_l = p_pl[a_le:b_le].astype(float)
-        s_lead, i_lead, r2 = fit_line(x_l, y_l)
-        if r2 < 0.6 or s_lead <= 0:        # lead-in must rise
-            continue
-        # Bump: slope in bump window must be steeper
-        a_bu = np.searchsorted(t_pl, i - bump_window, "left")
-        b_bu = np.searchsorted(t_pl, i, "right")
-        if (b_bu - a_bu) < 2:
-            continue
-        xb = t_pl[a_bu:b_bu].astype(float)
-        yb = p_pl[a_bu:b_bu].astype(float)
-        s_bump, _, _ = fit_line(xb, yb)
-        if s_bump < bump_factor * s_lead:   # bump not steep enough
-            continue
-        lead_level = line_val(s_lead, i_lead, i)
-        if mode == 'forming':
-            result[i] = -1
-        elif c[i] < lead_level:
-            result[i] = -1
+    if total >= N:
+        return result
+    # Both fits are fixed-width sliding regressions over the pivot series, so
+    # one prefix-sum pass each covers every bar.  The lead-in window
+    # [i-total, i-bump_window) is the bump-width fit evaluated `bump_window+1`
+    # bars earlier, with width lead_window-1.
+    S_LEAD, I_LEAD, R2_LEAD, N_LEAD = _sliding_fit(t_pl, p_pl, lead_window - 1, N)
+    S_BUMP, _, _, N_BUMP = _sliding_fit(t_pl, p_pl, bump_window, N)
+
+    i = np.arange(total, N)
+    j = i - bump_window - 1                    # lead-in window end bar
+    s_lead, i_lead = S_LEAD[j], I_LEAD[j]
+
+    fire = (N_LEAD[j] >= 2) & (R2_LEAD[j] >= 0.6) & (s_lead > 0)
+    fire &= (N_BUMP[i] >= 2) & (S_BUMP[i] >= bump_factor * s_lead)
+    if mode != 'forming':
+        fire &= c[total:] < (s_lead * i + i_lead)      # break back through lead-in
+    result[total:] = np.where(fire, -1, 0)
     return result
 
 
@@ -1393,30 +1395,20 @@ def bump_and_run_bottom(o, h, l, c,
     result = np.zeros(N, dtype=np.int8)
     total = lead_window + bump_window
 
-    for i in range(total, N):
-        a_le = np.searchsorted(t_ph, i - total, "left")
-        b_le = np.searchsorted(t_ph, i - bump_window, "left")
-        if (b_le - a_le) < 2:
-            continue
-        x_h = t_ph[a_le:b_le].astype(float)
-        y_h = p_ph[a_le:b_le].astype(float)
-        s_lead, i_lead, r2 = fit_line(x_h, y_h)
-        if r2 < 0.6 or s_lead >= 0:
-            continue
-        a_bu = np.searchsorted(t_ph, i - bump_window, "left")
-        b_bu = np.searchsorted(t_ph, i, "right")
-        if (b_bu - a_bu) < 2:
-            continue
-        xb = t_ph[a_bu:b_bu].astype(float)
-        yb = p_ph[a_bu:b_bu].astype(float)
-        s_bump, _, _ = fit_line(xb, yb)
-        if s_bump > bump_factor * s_lead:
-            continue
-        lead_level = line_val(s_lead, i_lead, i)
-        if mode == 'forming':
-            result[i] = 1
-        elif c[i] > lead_level:
-            result[i] = 1
+    if total >= N:
+        return result
+    S_LEAD, I_LEAD, R2_LEAD, N_LEAD = _sliding_fit(t_ph, p_ph, lead_window - 1, N)
+    S_BUMP, _, _, N_BUMP = _sliding_fit(t_ph, p_ph, bump_window, N)
+
+    i = np.arange(total, N)
+    j = i - bump_window - 1
+    s_lead, i_lead = S_LEAD[j], I_LEAD[j]
+
+    fire = (N_LEAD[j] >= 2) & (R2_LEAD[j] >= 0.6) & (s_lead < 0)
+    fire &= (N_BUMP[i] >= 2) & (S_BUMP[i] <= bump_factor * s_lead)
+    if mode != 'forming':
+        fire &= c[total:] > (s_lead * i + i_lead)
+    result[total:] = np.where(fire, 1, 0)
     return result
 
 
@@ -1435,6 +1427,40 @@ def _scallop_shape(prices, window):
     return mid < left and right > mid and right >= left * 0.95
 
 
+def _scallop_masks(c, window):
+    """Vectorised ``_scallop_shape`` over every trailing window at once.
+
+    Returns ``(rows_j, rows_inv, wmax, wmin)`` where ``rows_j[k]`` is the
+    J-shape test and ``rows_inv[k]`` the inverted (∩) test for the window
+    ending just before bar ``k + window``.  Negating the prices flips each
+    comparison, which is how the inverted variants are derived.
+    """
+    third = window // 3
+    W = trailing_windows(c, window)
+    if len(W) == 0:
+        z = np.zeros(0, dtype=bool)
+        return z, z, np.zeros(0), np.zeros(0)
+    left  = W[:, :third].mean(axis=1)
+    mid   = W[:, third:2 * third].mean(axis=1)
+    right = W[:, 2 * third:].mean(axis=1)
+    j_shape = (mid < left) & (right > mid) & (right >= left * 0.95)
+    inverted = (mid > left) & (right < mid) & (right <= left * 0.95)
+    return j_shape, inverted, W.max(axis=1), W.min(axis=1)
+
+
+def _scallop(c, N, window, trend, inverted, sign, mode):
+    """Shared body for all four scallop detectors."""
+    result = np.zeros(N, dtype=np.int8)
+    j_shape, inv, wmax, wmin = _scallop_masks(c, window)
+    if len(j_shape) == 0:
+        return result
+    fire = (inv if inverted else j_shape) & trend[window:]
+    if mode != 'forming':
+        fire &= (c[window:] < wmin) if inverted else (c[window:] > wmax)
+    result[window:] = np.where(fire, sign, 0)
+    return result
+
+
 def scallop_asc(o, h, l, c,
                  mode: str = 'confirmed',
                  window: int = 25) -> np.ndarray:
@@ -1444,16 +1470,8 @@ def scallop_asc(o, h, l, c,
     """
     o, h, l, c = (_a(x) for x in (o, h, l, c))
     N = len(c)
-    result = np.zeros(N, dtype=np.int8)
-    ut = uptrend(c, window)
-    for i in range(window, N):
-        w = c[i - window:i]
-        if _scallop_shape(w, window) and ut[i]:
-            if mode == 'forming':
-                result[i] = 1
-            elif c[i] > w.max():
-                result[i] = 1
-    return result
+    return _scallop(c, N, window, uptrend(c, window),
+                    inverted=False, sign=1, mode=mode)
 
 
 def scallop_asc_inv(o, h, l, c,
@@ -1465,16 +1483,8 @@ def scallop_asc_inv(o, h, l, c,
     """
     o, h, l, c = (_a(x) for x in (o, h, l, c))
     N = len(c)
-    result = np.zeros(N, dtype=np.int8)
-    ut = uptrend(c, window)
-    for i in range(window, N):
-        w = c[i - window:i]
-        if _scallop_shape(-w, window) and ut[i]:  # inverted
-            if mode == 'forming':
-                result[i] = -1
-            elif c[i] < w.min():
-                result[i] = -1
-    return result
+    return _scallop(c, N, window, uptrend(c, window),
+                    inverted=True, sign=-1, mode=mode)
 
 
 def scallop_desc(o, h, l, c,
@@ -1486,16 +1496,8 @@ def scallop_desc(o, h, l, c,
     """
     o, h, l, c = (_a(x) for x in (o, h, l, c))
     N = len(c)
-    result = np.zeros(N, dtype=np.int8)
-    dt = downtrend(c, window)
-    for i in range(window, N):
-        w = c[i - window:i]
-        if _scallop_shape(-w, window) and dt[i]:
-            if mode == 'forming':
-                result[i] = -1
-            elif c[i] < w.min():
-                result[i] = -1
-    return result
+    return _scallop(c, N, window, downtrend(c, window),
+                    inverted=True, sign=-1, mode=mode)
 
 
 def scallop_desc_inv(o, h, l, c,
@@ -1507,16 +1509,8 @@ def scallop_desc_inv(o, h, l, c,
     """
     o, h, l, c = (_a(x) for x in (o, h, l, c))
     N = len(c)
-    result = np.zeros(N, dtype=np.int8)
-    dt = downtrend(c, window)
-    for i in range(window, N):
-        w = c[i - window:i]
-        if _scallop_shape(w, window) and dt[i]:
-            if mode == 'forming':
-                result[i] = 1
-            elif c[i] > w.max():
-                result[i] = 1
-    return result
+    return _scallop(c, N, window, downtrend(c, window),
+                    inverted=False, sign=1, mode=mode)
 
 
 # ---------------------------------------------------------------------------

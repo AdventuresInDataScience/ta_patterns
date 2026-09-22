@@ -134,3 +134,6 @@ from .scanner import (
 
 # ── core utilities ────────────────────────────────────────────────────────────
 from ._core import atr, avg_body, _to_np
+
+# ── feature cache ─────────────────────────────────────────────────────────────
+from .chart_patterns._memo import clear_cache, cache_info

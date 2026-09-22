@@ -13,12 +13,19 @@ All chart-pattern sub-modules import from here.
 from __future__ import annotations
 from typing import Tuple, Optional
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 # Re-export parent helpers so sub-modules can import from one place
 from .._core import _to_np, uptrend, downtrend, _EPS, atr as atr
 from .._core import roll_mean, avg_body
+from ._memo import array_key, memoized, clear_cache, cache_info
 
 _a = _to_np          # short alias used throughout chart_patterns
+
+
+def _pivot_key(arr, n, pct, is_high):
+    k = array_key(arr)
+    return None if k is None else ("piv", k, n, pct, is_high)
 
 
 # ---------------------------------------------------------------------------
@@ -31,19 +38,19 @@ def pivot_highs(h, n: int = 5, pct: float | None = None) -> np.ndarray:
     Uses only h[0..t].  Optional *pct* applies a ZigZag-style minimum-swing
     filter on top of the bar-count neighbourhood.
     """
-    h  = _a(h)
+    h = _a(h)
+    return memoized(_pivot_key(h, n, pct, True), lambda: _pivot_highs_impl(h, n, pct))
+
+
+def _pivot_highs_impl(h, n, pct):
     N  = len(h)
     out = np.zeros(N, dtype=bool)
     if N < 2 * n + 1:
         return out
 
     hp = np.concatenate([np.full(n, -np.inf), h, np.full(n, -np.inf)])
-    try:
-        from numpy.lib.stride_tricks import sliding_window_view
-        wins   = sliding_window_view(hp, 2 * n + 1)
-        is_ph  = h >= wins.max(axis=1)
-    except AttributeError:
-        is_ph = np.array([h[j] >= hp[j:j + 2*n + 1].max() for j in range(N)])
+    wins   = sliding_window_view(hp, 2 * n + 1)
+    is_ph  = h >= wins.max(axis=1)
 
     out[n:] = is_ph[:N - n]
 
@@ -54,19 +61,19 @@ def pivot_highs(h, n: int = 5, pct: float | None = None) -> np.ndarray:
 
 def pivot_lows(l, n: int = 5, pct: float | None = None) -> np.ndarray:
     """Mirror of :func:`pivot_highs` for lows."""
-    l  = _a(l)
+    l = _a(l)
+    return memoized(_pivot_key(l, n, pct, False), lambda: _pivot_lows_impl(l, n, pct))
+
+
+def _pivot_lows_impl(l, n, pct):
     N  = len(l)
     out = np.zeros(N, dtype=bool)
     if N < 2 * n + 1:
         return out
 
     lp = np.concatenate([np.full(n, np.inf), l, np.full(n, np.inf)])
-    try:
-        from numpy.lib.stride_tricks import sliding_window_view
-        wins   = sliding_window_view(lp, 2 * n + 1)
-        is_pl  = l <= wins.min(axis=1)
-    except AttributeError:
-        is_pl = np.array([l[j] <= lp[j:j + 2*n + 1].min() for j in range(N)])
+    wins   = sliding_window_view(lp, 2 * n + 1)
+    is_pl  = l <= wins.min(axis=1)
 
     out[n:] = is_pl[:N - n]
 
@@ -307,12 +314,7 @@ def roll_max(a: np.ndarray, n: int) -> np.ndarray:
     out = np.full(N, np.nan)
     if n > N:
         return out
-    try:
-        from numpy.lib.stride_tricks import sliding_window_view
-        out[n - 1:] = sliding_window_view(a, n).max(axis=1)
-    except AttributeError:
-        for i in range(n - 1, N):
-            out[i] = a[i - n + 1:i + 1].max()
+    out[n - 1:] = sliding_window_view(a, n).max(axis=1)
     return out
 
 
@@ -322,12 +324,7 @@ def roll_min(a: np.ndarray, n: int) -> np.ndarray:
     out = np.full(N, np.nan)
     if n > N:
         return out
-    try:
-        from numpy.lib.stride_tricks import sliding_window_view
-        out[n - 1:] = sliding_window_view(a, n).min(axis=1)
-    except AttributeError:
-        for i in range(n - 1, N):
-            out[i] = a[i - n + 1:i + 1].min()
+    out[n - 1:] = sliding_window_view(a, n).min(axis=1)
     return out
 
 
