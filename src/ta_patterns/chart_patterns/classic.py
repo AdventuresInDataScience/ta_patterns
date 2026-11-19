@@ -871,7 +871,12 @@ def channel_desc(o, h, l, c,
 
 def _flagpole(c, i, min_move: float, pole_bars: int):
     """Return (pole_start, direction) if a flagpole exists before bar i."""
-    if i < pole_bars:
+    # The pole runs from i - 1 - pole_bars to i - 1, so it needs i > pole_bars.
+    # With `i < pole_bars` here, i == pole_bars gave pole_start == -1, and c[-1]
+    # is the LAST close of the whole array: each flag and pennant detector's
+    # first evaluated bar was judged against the final price (lookahead, until
+    # 1.2.2).
+    if i <= pole_bars:
         return -1, 0
     pole_end   = i - 1
     pole_start = pole_end - pole_bars

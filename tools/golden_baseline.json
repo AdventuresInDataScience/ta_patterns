@@ -1187,6 +1187,30 @@
 "e779a929530e34e2c72563c9",
 0
 ],
+"double_bottom_ugly|chop1500|confirmed": [
+"f2eecf8aaa961dd0809bed34",
+0
+],
+"double_bottom_ugly|chop1500|forming": [
+"cf84d48d1d101dd44d3fbef1",
+93
+],
+"double_bottom_ugly|gbm2000|confirmed": [
+"4d992d19cbc42320e5cfafaa",
+358
+],
+"double_bottom_ugly|gbm2000|forming": [
+"12d87173a41e545f24ccc0f5",
+1248
+],
+"double_bottom_ugly|trend3000|confirmed": [
+"d6a2633b0a7b3f2f116dda3f",
+838
+],
+"double_bottom_ugly|trend3000|forming": [
+"fe8f0ec3c762637262da95a2",
+1988
+],
 "double_bottom|chop1500|confirmed": [
 "f2eecf8aaa961dd0809bed34",
 0
@@ -1600,12 +1624,12 @@
 4
 ],
 "flag_bear|trend3000|confirmed": [
-"740e569c7dd49ae8d25ab208",
-1
+"e779a929530e34e2c72563c9",
+0
 ],
 "flag_bear|trend3000|forming": [
-"740e569c7dd49ae8d25ab208",
-1
+"e779a929530e34e2c72563c9",
+0
 ],
 "flag_bull|chop1500|confirmed": [
 "f2eecf8aaa961dd0809bed34",

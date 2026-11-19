@@ -48,7 +48,7 @@ Available extras:
 
 ```python
 import ta_patterns as tap
-print(tap.__version__)              # 1.2.1
+print(tap.__version__)              # 1.2.2
 print(len(tap.list_all_patterns())) # 300
 ```
 

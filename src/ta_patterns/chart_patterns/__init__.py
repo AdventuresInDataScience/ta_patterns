@@ -80,7 +80,7 @@ from .double_multi import (
     double_top_eve_adam, double_top_eve_eve,
     double_bottom, double_bottom_adam_adam, double_bottom_adam_eve,
     double_bottom_eve_adam, double_bottom_eve_eve,
-    ugly_double_bottom,
+    double_bottom_ugly, ugly_double_bottom,
     triple_top, triple_bottom,
     big_m, big_w,
     three_peaks, three_valleys, three_peaks_domed_house,

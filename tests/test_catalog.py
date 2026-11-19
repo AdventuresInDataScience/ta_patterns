@@ -36,6 +36,23 @@ def test_candle_direction_partition():
     assert parts == total == 106
 
 
+def test_every_listed_pattern_is_a_function_of_that_name():
+    """The catalogues name functions, so each name must look one up. Until 1.2.2
+    the lists said ``double_bottom_ugly`` while the function was
+    ``ugly_double_bottom``: ``getattr(cp, "double_bottom_ugly")`` failed, and a
+    tool building its menu from the lists silently dropped the pattern."""
+    missing = sorted(name for name in cp.CHART_PATTERNS if not callable(getattr(cp, name, None)))
+    missing += sorted(name for name in sc.PATTERNS if not callable(getattr(tap, name, None)))
+    assert not missing, missing
+
+
+def test_the_ugly_double_bottom_answers_to_both_names():
+    """``double_bottom_ugly`` is its name, like the rest of its family; the old
+    ``ugly_double_bottom`` stays as an alias so code written for 1.2.1 still runs."""
+    assert cp.double_bottom_ugly is cp.ugly_double_bottom
+    assert "double_bottom_ugly" in cp.BULLISH
+
+
 def test_bullish_and_bearish_disjoint():
     assert not (sc.BULLISH & sc.BEARISH)
     assert not (cp.BULLISH & cp.BEARISH)

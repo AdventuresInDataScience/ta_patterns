@@ -337,12 +337,12 @@ def double_bottom_eve_eve(o, h, l, c, mode: str = 'confirmed',
                                   tol, min_separation, 'eve', 'eve')
 
 
-def ugly_double_bottom(o, h, l, c, mode: str = 'confirmed',
-                        window: int = 60, pivot_n: int = 5,
-                        pivot_pct: float = None,
-                        tol: float = 0.06,
-                        asymmetry: float = 0.03,
-                        min_separation: int = 5) -> np.ndarray:
+def double_bottom_ugly(o, h, l, c, mode: str = 'confirmed',
+                       window: int = 60, pivot_n: int = 5,
+                       pivot_pct: float = None,
+                       tol: float = 0.06,
+                       asymmetry: float = 0.03,
+                       min_separation: int = 5) -> np.ndarray:
     """
     **BULLISH** (+1 / 0).
     'Ugly' double bottom: the two troughs are NOT at the same level —
@@ -390,6 +390,13 @@ def ugly_double_bottom(o, h, l, c, mode: str = 'confirmed',
                 result[i] = 1
 
     return result
+
+
+# The name this detector had until 1.2.2. The catalogues (BULLISH,
+# CHART_PATTERNS), the scanner's output and the docs always called it
+# double_bottom_ugly, like the rest of its family, so a lookup by the listed
+# name failed. Kept so code written against the old name still runs.
+ugly_double_bottom = double_bottom_ugly
 
 
 # ---------------------------------------------------------------------------
